@@ -32,7 +32,6 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
       - run: npm --version
       - run: node --check bin/benchrouter-setup.mjs
       - run: npm pack --dry-run
