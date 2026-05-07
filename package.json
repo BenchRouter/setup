@@ -1,10 +1,10 @@
 {
   "name": "@benchrouter/setup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "BenchRouter target-repo setup CLI",
   "type": "module",
   "bin": {
-    "benchrouter-setup": "./bin/benchrouter-setup.mjs"
+    "benchrouter-setup": "bin/benchrouter-setup.mjs"
   },
   "files": [
     "bin",
