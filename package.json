@@ -1,0 +1,28 @@
+{
+  "name": "@benchrouter/setup",
+  "version": "0.1.0",
+  "description": "BenchRouter target-repo setup CLI",
+  "type": "module",
+  "bin": {
+    "benchrouter-setup": "./bin/benchrouter-setup.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BenchRouter/setup.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BenchRouter/setup/issues"
+  },
+  "homepage": "https://github.com/BenchRouter/setup#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
