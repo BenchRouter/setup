@@ -14,6 +14,16 @@ npx @benchrouter/setup init \
 
 The setup code comes from the logged-in BenchRouter setup page. It is short-lived and scoped to one GitHub App installation and repo.
 
+Until the npm package is published, the public GitHub package can be run with:
+
+```bash
+npx github:BenchRouter/setup init \
+  --setup-code br_setup_... \
+  --route-id product/route \
+  --name "Route Name" \
+  --incumbent-model provider/model
+```
+
 ## Commands
 
 ```bash
