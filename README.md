@@ -28,12 +28,15 @@ npx github:BenchRouter/setup init \
 
 ```bash
 npx @benchrouter/setup init --help
+npx @benchrouter/setup models
 npx @benchrouter/setup doctor
 ```
 
 `init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds the minimal `.env.example` entry for the BenchRouter API key. The generated workflow runs on the setup PR: it imports the PR commit's config file as a PR-tagged BenchRouter route, uploads that PR route's eval result, and fails the PR check if the route cannot call BenchRouter.
 
 The route ID belongs at the selected LLM call site as the OpenAI-compatible `model` value. Do not add a repo-global `BENCHROUTER_MODEL`; repos with multiple routes should send a different route ID per call site.
+
+`models` prints exact enabled BenchRouter model IDs, one per line. If `init` rejects the repo's current incumbent model, do not silently substitute another model. Use `models` only to inspect enabled IDs, then rerun `init` after the user explicitly approves one exact replacement.
 
 `doctor` validates expected BenchRouter files, package script, env example entries, generated helper syntax, PR workflow wiring, and incumbent model id against the BenchRouter catalog. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
 

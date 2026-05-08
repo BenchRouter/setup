@@ -11,6 +11,8 @@ if (command === "init") {
   await init();
 } else if (command === "doctor") {
   await doctor();
+} else if (command === "models") {
+  await models();
 } else {
   usage(command === "help" || args.help ? 0 : 1);
 }
@@ -108,7 +110,7 @@ async function init() {
   process.stdout.write("- Patch exactly one runtime call site to send the BenchRouter route ID as that call site's model value.\n");
   process.stdout.write("- Keep persistent config minimal: do not create a repo-global BENCHROUTER_MODEL, and do not install CI-only BenchRouter workflow variables as deploy env vars.\n");
   process.stdout.write("- Ask before installing secrets; use the generated Production key for the app and the generated GitHub Actions key for repo secrets. Do not leave them only in chat or terminal output.\n");
-  process.stdout.write("- Run `npx @benchrouter/setup doctor` before opening the PR.\n");
+  process.stdout.write("- Run this same setup CLI's `doctor` command before opening the PR.\n");
   process.stdout.write("- Confirm the BenchRouter Evals PR check passes before merging.\n");
   process.stdout.write("\nSuggested PR body:\n");
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel, writtenPaths }));
@@ -144,11 +146,45 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeId, rout
     body: JSON.stringify(stripUndefined(body))
   });
 
+  const responseText = await response.text();
+
   if (!response.ok) {
-    fail(`Setup packet request failed (${response.status}): ${(await response.text()).slice(0, 800)}`);
+    const parsed = parseJson(responseText);
+    const error = parsed?.error;
+    if (isUnsupportedIncumbentModel(response.status, error)) {
+      fail(unsupportedIncumbentMessage(incumbentModel));
+    }
+    fail(`Setup packet request failed (${response.status}): ${responseText.slice(0, 800)}`);
   }
 
-  return response.json();
+  return JSON.parse(responseText);
+}
+
+async function models() {
+  if (args.help) {
+    usage(0, "models");
+  }
+
+  const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
+  const filter = stringArg("filter");
+  let modelIds;
+  try {
+    modelIds = await fetchModelIds(apiUrl);
+  } catch (error) {
+    fail(`Could not fetch BenchRouter model catalog: ${error instanceof Error ? error.message : "request failed"}`);
+  }
+
+  const filtered = filter
+    ? modelIds.filter((id) => id.toLowerCase().includes(filter.toLowerCase()))
+    : modelIds;
+
+  if (filtered.length === 0) {
+    fail(`No enabled BenchRouter models matched ${JSON.stringify(filter)}.`);
+  }
+
+  for (const id of filtered) {
+    process.stdout.write(`${id}\n`);
+  }
 }
 
 async function doctor() {
@@ -273,15 +309,56 @@ async function doctor() {
 
 async function fetchAllowedModels(apiUrl, failures) {
   try {
-    const response = await fetch(`${apiUrl}/v1/models`, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) {
-      failures.push(`could not fetch BenchRouter model catalog (${response.status})`);
-      return null;
-    }
-    const data = await response.json();
-    return new Set((Array.isArray(data.data) ? data.data : []).map((model) => model?.id).filter((id) => typeof id === "string"));
+    return new Set(await fetchModelIds(apiUrl));
   } catch (error) {
     failures.push(`could not fetch BenchRouter model catalog: ${error instanceof Error ? error.message : "request failed"}`);
+    return null;
+  }
+}
+
+async function fetchModelIds(apiUrl) {
+  const response = await fetch(`${apiUrl}/v1/models`, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  const ids = (Array.isArray(data.data) ? data.data : [])
+    .map((model) => model?.id)
+    .filter((id) => typeof id === "string")
+    .sort();
+  if (ids.length === 0) {
+    throw new Error("catalog returned no enabled model IDs");
+  }
+  return ids;
+}
+
+function isUnsupportedIncumbentModel(status, error) {
+  if (status !== 400 || !error || typeof error !== "object") {
+    return false;
+  }
+  return error.code === "model_not_allowed" && String(error.message ?? "").includes("route.incumbent_model");
+}
+
+function unsupportedIncumbentMessage(modelId) {
+  return `BenchRouter setup stopped before writing files.
+
+The incumbent model from this repo is not currently enabled:
+  ${modelId}
+
+Do not replace it automatically. A replacement changes runtime behavior.
+
+Next steps:
+1. Pause setup while BenchRouter adds/enables ${modelId}.
+2. To inspect exact enabled IDs, run:
+   npx github:BenchRouter/setup models
+3. Re-run init only after the user explicitly approves one exact enabled model ID:
+   npx github:BenchRouter/setup init ... --incumbent-model <enabled-provider/model-id>`;
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
     return null;
   }
 }
@@ -410,7 +487,7 @@ ${writtenPaths.map((item) => `- ${item}`).join("\n")}
 - CI-only BenchRouter workflow variables: TODO confirm none were installed as persistent app env vars or repo secrets.
 
 ### Checks run
-- TODO: include local tests, \`npx @benchrouter/setup doctor\`, and the BenchRouter Evals PR check URL/status.
+- TODO: include local tests, the setup CLI doctor command, and the BenchRouter Evals PR check URL/status.
 
 ### PR check note
 - Use a branch in this repository, not a fork, when possible so the GitHub Actions secret is available to the BenchRouter Evals check.
@@ -519,9 +596,18 @@ Options:
   --force                  Overwrite differing BenchRouter-generated files.
   --output-dir <path>      Defaults to current directory.
 `);
+  } else if (commandName === "models") {
+    stream.write(`Usage:
+  npx @benchrouter/setup models [options]
+
+Options:
+  --api-url <url>          Defaults to https://api.benchrouter.com.
+  --filter <text>          Print only enabled IDs containing this text.
+`);
   } else {
     stream.write(`Usage:
   npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
+  npx @benchrouter/setup models
   npx @benchrouter/setup doctor
   npx @benchrouter/setup doctor --repo owner/repo --api-url https://api.benchrouter.com
 `);
