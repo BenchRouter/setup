@@ -43,9 +43,11 @@ async function init() {
     repoFullName,
     routeId,
     routeName,
-    incumbentModel
+    incumbentModel,
+    dryRun
   });
   const packet = packetResponse.setup_packet;
+  const setupApiKeys = packet.setup_api_keys;
   const targetRepo = repoFullName ?? packetResponse.repo_full_name;
 
   if (dryRun) {
@@ -55,6 +57,7 @@ async function init() {
     }
     process.stdout.write("would update package.json scripts/devDependencies when package.json exists\n");
     process.stdout.write("would update or create .env.example\n");
+    process.stdout.write("would request Production and GitHub Actions API keys during a real init\n");
     return;
   }
 
@@ -95,20 +98,31 @@ async function init() {
     writtenPaths.push(".env.example");
   }
 
+  printSetupApiKeys(setupApiKeys);
+
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Replace the generated smoke eval with product-specific cases when possible.\n");
   process.stdout.write("- Patch exactly one runtime call site to use BENCHROUTER_BASE_URL and BENCHROUTER_MODEL.\n");
-  process.stdout.write("- Store the Production BENCHROUTER_API_KEY in the app secret manager.\n");
-  process.stdout.write("- Store the GitHub Actions BENCHROUTER_API_KEY in repo secrets.\n");
+  process.stdout.write("- Ask before installing secrets; use the generated Production key for the app and the generated GitHub Actions key for repo secrets. Do not leave them only in chat or terminal output.\n");
   process.stdout.write("- Run `npx @benchrouter/setup doctor` before opening the PR.\n");
   process.stdout.write("- Confirm the BenchRouter Evals PR check passes before merging.\n");
   process.stdout.write("\nSuggested PR body:\n");
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel, writtenPaths }));
 }
 
-async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeId, routeName, incumbentModel }) {
+function printSetupApiKeys(setupApiKeys) {
+  if (!setupApiKeys?.production?.key || !setupApiKeys?.github_actions?.key) {
+    return;
+  }
+  process.stdout.write("\nBenchRouter generated setup API keys. They are shown once:\n");
+  process.stdout.write(`- Production BENCHROUTER_API_KEY: ${setupApiKeys.production.key}\n`);
+  process.stdout.write(`- GitHub Actions BENCHROUTER_API_KEY: ${setupApiKeys.github_actions.key}\n`);
+}
+
+async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeId, routeName, incumbentModel, dryRun }) {
   const body = {
     repo_full_name: repoFullName,
+    dry_run: dryRun ? true : undefined,
     route: {
       route_id: routeId,
       name: routeName,
@@ -386,9 +400,9 @@ ${writtenPaths.map((item) => `- ${item}`).join("\n")}
 ### Eval coverage
 - TODO: list product cases wrapped or added, plus uncovered gaps.
 
-### Secrets required
-- Production BENCHROUTER_API_KEY in the app secret manager.
-- GitHub Actions BENCHROUTER_API_KEY in repo secrets.
+### Secrets
+- Production BENCHROUTER_API_KEY: TODO installed in app secret manager, or blocked with exact manual destination.
+- GitHub Actions BENCHROUTER_API_KEY: TODO installed in repo secrets, or blocked with exact manual destination.
 
 ### Checks run
 - TODO: include local tests, \`npx @benchrouter/setup doctor\`, and the BenchRouter Evals PR check URL/status.

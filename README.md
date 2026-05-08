@@ -12,7 +12,7 @@ npx @benchrouter/setup init \
   --incumbent-model provider/model
 ```
 
-The setup code comes from the logged-in BenchRouter setup page. It is short-lived and scoped to one GitHub App installation and repo.
+The setup key comes from the logged-in BenchRouter setup page. It is short-lived and scoped to one GitHub App installation and repo. When `init` fetches the setup packet with that key, BenchRouter returns one-time Production and GitHub Actions API keys for the target agent to install after user approval.
 
 Until the npm package is published, the public GitHub package can be run with:
 
