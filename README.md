@@ -31,7 +31,7 @@ npx @benchrouter/setup init --help
 npx @benchrouter/setup doctor
 ```
 
-`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds `.env.example` entries. The generated workflow runs on the setup PR: it imports the PR commit's manifest as a BenchRouter preview, uploads a non-promotable PR eval result, and fails the PR check if the route cannot call BenchRouter.
+`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds `.env.example` entries. The generated workflow runs on the setup PR: it imports the PR commit's manifest as a PR-tagged BenchRouter route, uploads that PR route's eval result, and fails the PR check if the route cannot call BenchRouter.
 
 `doctor` validates expected BenchRouter files, package script, env example entries, generated helper syntax, PR workflow wiring, and incumbent model id against the BenchRouter catalog. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
 
