@@ -6,7 +6,7 @@ Run it from the repository you want to route through BenchRouter:
 
 ```bash
 npx @benchrouter/setup init \
-  --setup-code br_setup_... \
+  --setup-key br_setup_... \
   --route-id product/route \
   --name "Route Name" \
   --incumbent-model provider/model
@@ -18,7 +18,7 @@ Until the npm package is published, the public GitHub package can be run with:
 
 ```bash
 npx github:BenchRouter/setup init \
-  --setup-code br_setup_... \
+  --setup-key br_setup_... \
   --route-id product/route \
   --name "Route Name" \
   --incumbent-model provider/model
@@ -31,7 +31,9 @@ npx @benchrouter/setup init --help
 npx @benchrouter/setup doctor
 ```
 
-`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds `.env.example` entries. The generated workflow runs on the setup PR: it imports the PR commit's manifest as a PR-tagged BenchRouter route, uploads that PR route's eval result, and fails the PR check if the route cannot call BenchRouter.
+`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds the minimal `.env.example` entry for the BenchRouter API key. The generated workflow runs on the setup PR: it imports the PR commit's config file as a PR-tagged BenchRouter route, uploads that PR route's eval result, and fails the PR check if the route cannot call BenchRouter.
+
+The route ID belongs at the selected LLM call site as the OpenAI-compatible `model` value. Do not add a repo-global `BENCHROUTER_MODEL`; repos with multiple routes should send a different route ID per call site.
 
 `doctor` validates expected BenchRouter files, package script, env example entries, generated helper syntax, PR workflow wiring, and incumbent model id against the BenchRouter catalog. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
 

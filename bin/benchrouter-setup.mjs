@@ -21,7 +21,10 @@ async function init() {
   }
 
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
-  const setupCode = stringArg("setup-code", process.env.BENCHROUTER_SETUP_CODE);
+  const setupCode = stringArg(
+    "setup-key",
+    stringArg("setup-code", process.env.BENCHROUTER_SETUP_KEY ?? process.env.BENCHROUTER_SETUP_CODE)
+  );
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
   const routeId = stringArg("route-id");
   const routeName = stringArg("name");
@@ -31,7 +34,7 @@ async function init() {
   const force = Boolean(args.force);
 
   if (!setupCode) {
-    fail("Missing setup code. Pass --setup-code or set BENCHROUTER_SETUP_CODE.");
+    fail("Missing setup key. Pass --setup-key or set BENCHROUTER_SETUP_KEY.");
   }
   if (!routeId || !routeName || !incumbentModel) {
     usage(1, "init", "Missing --route-id, --name, or --incumbent-model.");
@@ -102,7 +105,8 @@ async function init() {
 
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Replace the generated smoke eval with product-specific cases when possible.\n");
-  process.stdout.write("- Patch exactly one runtime call site to use BENCHROUTER_BASE_URL and BENCHROUTER_MODEL.\n");
+  process.stdout.write("- Patch exactly one runtime call site to send the BenchRouter route ID as that call site's model value.\n");
+  process.stdout.write("- Keep persistent config minimal: do not create a repo-global BENCHROUTER_MODEL, and do not install CI-only BenchRouter workflow variables as deploy env vars.\n");
   process.stdout.write("- Ask before installing secrets; use the generated Production key for the app and the generated GitHub Actions key for repo secrets. Do not leave them only in chat or terminal output.\n");
   process.stdout.write("- Run `npx @benchrouter/setup doctor` before opening the PR.\n");
   process.stdout.write("- Confirm the BenchRouter Evals PR check passes before merging.\n");
@@ -231,7 +235,7 @@ async function doctor() {
     failures.push("missing .env.example");
   } else {
     const envExample = readFileSync(envExamplePath, "utf8");
-    for (const key of ["BENCHROUTER_API_KEY", "BENCHROUTER_BASE_URL", "BENCHROUTER_MODEL"]) {
+    for (const key of ["BENCHROUTER_API_KEY"]) {
       if (!new RegExp(`^${key}=`, "m").test(envExample)) {
         failures.push(`.env.example missing ${key}`);
       }
@@ -403,6 +407,7 @@ ${writtenPaths.map((item) => `- ${item}`).join("\n")}
 ### Secrets
 - Production BENCHROUTER_API_KEY: TODO installed in app secret manager, or blocked with exact manual destination.
 - GitHub Actions BENCHROUTER_API_KEY: TODO installed in repo secrets, or blocked with exact manual destination.
+- CI-only BenchRouter workflow variables: TODO confirm none were installed as persistent app env vars or repo secrets.
 
 ### Checks run
 - TODO: include local tests, \`npx @benchrouter/setup doctor\`, and the BenchRouter Evals PR check URL/status.
@@ -505,7 +510,7 @@ function usage(status, commandName = "all", message) {
   }
   if (commandName === "init") {
     stream.write(`Usage:
-  npx @benchrouter/setup init --setup-code br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model [options]
+  npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model [options]
 
 Options:
   --repo owner/repo
@@ -516,7 +521,7 @@ Options:
 `);
   } else {
     stream.write(`Usage:
-  npx @benchrouter/setup init --setup-code br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
+  npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
   npx @benchrouter/setup doctor
   npx @benchrouter/setup doctor --repo owner/repo --api-url https://api.benchrouter.com
 `);
