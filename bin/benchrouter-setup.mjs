@@ -177,6 +177,7 @@ async function doctor() {
       ".benchrouter/upload-results.mjs",
       "pull_request",
       "preview",
+      "create_eval_run",
       "BENCHROUTER_EVAL_RUN_ID",
       "BENCHROUTER_ROUTE_ID",
       "BENCHROUTER_API_KEY",

@@ -4,7 +4,7 @@
   "description": "BenchRouter target-repo setup CLI",
   "type": "module",
   "bin": {
-    "benchrouter-setup": "./bin/benchrouter-setup.mjs"
+    "benchrouter-setup": "bin/benchrouter-setup.mjs"
   },
   "files": [
     "bin",
