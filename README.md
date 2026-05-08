@@ -31,8 +31,20 @@ npx @benchrouter/setup init --help
 npx @benchrouter/setup doctor
 ```
 
-`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds `.env.example` entries.
+`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds `.env.example` entries. The generated workflow runs on the setup PR with uploads disabled: it imports the PR commit's manifest as a BenchRouter preview and fails the PR check if the route cannot call BenchRouter.
 
-`doctor` validates that the expected BenchRouter setup files, package script, and env example entries exist before opening a PR.
+`doctor` validates expected BenchRouter files, package script, env example entries, generated helper syntax, PR workflow wiring, and incumbent model id against the BenchRouter catalog. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
+
+Before opening a PR, use:
+
+```bash
+npx @benchrouter/setup doctor --repo owner/repo
+```
+
+After the PR is merged, verify the config file is readable on the default branch:
+
+```bash
+npx @benchrouter/setup doctor --repo owner/repo --check-default-branch
+```
 
 The CLI never writes a raw BenchRouter API key to disk.

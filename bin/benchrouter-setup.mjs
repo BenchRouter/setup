@@ -10,7 +10,7 @@ const command = args._[0] ?? "help";
 if (command === "init") {
   await init();
 } else if (command === "doctor") {
-  doctor();
+  await doctor();
 } else {
   usage(command === "help" || args.help ? 0 : 1);
 }
@@ -98,8 +98,10 @@ async function init() {
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Replace the generated smoke eval with product-specific cases when possible.\n");
   process.stdout.write("- Patch exactly one runtime call site to use BENCHROUTER_BASE_URL and BENCHROUTER_MODEL.\n");
-  process.stdout.write("- Store BENCHROUTER_API_KEY in GitHub Actions and the app secret manager.\n");
+  process.stdout.write("- Store the Production BENCHROUTER_API_KEY in the app secret manager.\n");
+  process.stdout.write("- Store the GitHub Actions BENCHROUTER_API_KEY in repo secrets.\n");
   process.stdout.write("- Run `npx @benchrouter/setup doctor` before opening the PR.\n");
+  process.stdout.write("- Confirm the BenchRouter Evals PR check passes before merging.\n");
   process.stdout.write("\nSuggested PR body:\n");
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel, writtenPaths }));
 }
@@ -131,8 +133,10 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeId, rout
   return response.json();
 }
 
-function doctor() {
+async function doctor() {
   const root = path.resolve(stringArg("output-dir", process.cwd()));
+  const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
+  const repoFullName = stringArg("repo") ?? detectGitHubRepo();
   const failures = [];
   const requiredFiles = [
     ".benchrouter/benchrouter.yml",
@@ -145,6 +149,51 @@ function doctor() {
   for (const relativePath of requiredFiles) {
     if (!existsSync(path.join(root, relativePath))) {
       failures.push(`missing ${relativePath}`);
+    }
+  }
+
+  const manifestPath = path.join(root, ".benchrouter/benchrouter.yml");
+  const manifest = existsSync(manifestPath) ? parseManifestForDoctor(readFileSync(manifestPath, "utf8")) : null;
+  if (manifest) {
+    if (!manifest.routeId) {
+      failures.push(".benchrouter/benchrouter.yml missing route_id");
+    } else if (!/^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/i.test(manifest.routeId)) {
+      failures.push(`.benchrouter/benchrouter.yml route_id must look like product/route: ${manifest.routeId}`);
+    }
+    if (!manifest.incumbentModel) {
+      failures.push(".benchrouter/benchrouter.yml missing seed.incumbent_model");
+    } else if (!args["skip-model-check"]) {
+      const allowedModels = await fetchAllowedModels(apiUrl, failures);
+      if (allowedModels && !allowedModels.has(manifest.incumbentModel)) {
+        failures.push(`seed.incumbent_model is not in the BenchRouter catalog: ${manifest.incumbentModel}`);
+      }
+    }
+  }
+
+  const workflowPath = path.join(root, ".github/workflows/benchrouter-evals.yml");
+  if (existsSync(workflowPath)) {
+    const workflow = readFileSync(workflowPath, "utf8");
+    for (const snippet of [
+      ".benchrouter/upload-results.mjs",
+      "pull_request",
+      "preview",
+      "BENCHROUTER_EVAL_RUN_ID",
+      "BENCHROUTER_ROUTE_ID",
+      "BENCHROUTER_API_KEY",
+      "BENCHROUTER_UPLOAD_RESULTS",
+      "id-token: write"
+    ]) {
+      if (!workflow.includes(snippet)) {
+        failures.push(`workflow missing ${snippet}`);
+      }
+    }
+  }
+
+  const uploadHelperPath = path.join(root, ".benchrouter/upload-results.mjs");
+  if (existsSync(uploadHelperPath)) {
+    const check = spawnSync(process.execPath, ["--check", uploadHelperPath], { encoding: "utf8" });
+    if (check.status !== 0) {
+      failures.push(`.benchrouter/upload-results.mjs failed node --check: ${(check.stderr || check.stdout).trim()}`);
     }
   }
 
@@ -176,6 +225,22 @@ function doctor() {
     }
   }
 
+  if (!args["skip-github-secret"]) {
+    if (!repoFullName) {
+      failures.push("could not detect GitHub repo for secret check; pass --repo owner/repo or --skip-github-secret");
+    } else {
+      verifyGitHubActionsSecret(repoFullName, failures);
+    }
+  }
+
+  if (args["check-default-branch"]) {
+    if (!repoFullName) {
+      failures.push("could not detect GitHub repo for default-branch check; pass --repo owner/repo");
+    } else {
+      verifyDefaultBranchConfig(repoFullName, failures);
+    }
+  }
+
   if (failures.length > 0) {
     for (const failure of failures) {
       process.stderr.write(`doctor failed: ${failure}\n`);
@@ -184,6 +249,80 @@ function doctor() {
   }
 
   process.stdout.write("BenchRouter setup doctor passed.\n");
+}
+
+async function fetchAllowedModels(apiUrl, failures) {
+  try {
+    const response = await fetch(`${apiUrl}/v1/models`, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) {
+      failures.push(`could not fetch BenchRouter model catalog (${response.status})`);
+      return null;
+    }
+    const data = await response.json();
+    return new Set((Array.isArray(data.data) ? data.data : []).map((model) => model?.id).filter((id) => typeof id === "string"));
+  } catch (error) {
+    failures.push(`could not fetch BenchRouter model catalog: ${error instanceof Error ? error.message : "request failed"}`);
+    return null;
+  }
+}
+
+function parseManifestForDoctor(text) {
+  return {
+    routeId: yamlScalarValue(text.match(/^\s*-?\s*route_id:\s*(.+)$/m)?.[1]),
+    incumbentModel: yamlScalarValue(text.match(/^\s*incumbent_model:\s*(.+)$/m)?.[1])
+  };
+}
+
+function yamlScalarValue(value) {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed.split(/\s+#/)[0].trim();
+}
+
+function verifyGitHubActionsSecret(repoFullName, failures) {
+  const result = spawnSync("gh", ["secret", "list", "--repo", repoFullName], { encoding: "utf8" });
+  if (result.status !== 0) {
+    failures.push(`could not verify GitHub Actions secrets with gh: ${(result.stderr || result.stdout || "gh failed").trim()}`);
+    return;
+  }
+  const hasSecret = result.stdout
+    .split(/\r?\n/)
+    .some((line) => line.trim().split(/\s+/)[0] === "BENCHROUTER_API_KEY");
+  if (!hasSecret) {
+    failures.push(`GitHub Actions secret BENCHROUTER_API_KEY is missing for ${repoFullName}`);
+  }
+}
+
+function verifyDefaultBranchConfig(repoFullName, failures) {
+  const repoResult = spawnSync("gh", ["repo", "view", repoFullName, "--json", "defaultBranchRef"], { encoding: "utf8" });
+  if (repoResult.status !== 0) {
+    failures.push(`could not look up GitHub default branch with gh: ${(repoResult.stderr || repoResult.stdout || "gh failed").trim()}`);
+    return;
+  }
+  let defaultBranch = "main";
+  try {
+    defaultBranch = JSON.parse(repoResult.stdout).defaultBranchRef?.name || defaultBranch;
+  } catch {
+    failures.push("could not parse gh default branch response");
+    return;
+  }
+
+  const configResult = spawnSync("gh", [
+    "api",
+    "--method",
+    "GET",
+    `repos/${repoFullName}/contents/.benchrouter/benchrouter.yml`,
+    "-f",
+    `ref=${defaultBranch}`
+  ], { encoding: "utf8" });
+  if (configResult.status !== 0) {
+    failures.push(`.benchrouter/benchrouter.yml is not readable on default branch ${defaultBranch}: ${(configResult.stderr || configResult.stdout || "gh failed").trim()}`);
+  }
 }
 
 function updatePackageJson(packageJsonPath, packageJsonInstructions) {
@@ -246,11 +385,14 @@ ${writtenPaths.map((item) => `- ${item}`).join("\n")}
 - TODO: list product cases wrapped or added, plus uncovered gaps.
 
 ### Secrets required
-- BENCHROUTER_API_KEY in GitHub Actions.
-- BENCHROUTER_API_KEY in the app secret manager.
+- Production BENCHROUTER_API_KEY in the app secret manager.
+- GitHub Actions BENCHROUTER_API_KEY in repo secrets.
 
 ### Checks run
-- TODO: include local tests and \`npx @benchrouter/setup doctor\`.
+- TODO: include local tests, \`npx @benchrouter/setup doctor\`, and the BenchRouter Evals PR check URL/status.
+
+### PR check note
+- Use a branch in this repository, not a fork, when possible so the GitHub Actions secret is available to the BenchRouter Evals check.
 
 ### Rollback
 1. Set the selected call site's base URL back to the previous provider.
@@ -360,6 +502,7 @@ Options:
     stream.write(`Usage:
   npx @benchrouter/setup init --setup-code br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
   npx @benchrouter/setup doctor
+  npx @benchrouter/setup doctor --repo owner/repo --api-url https://api.benchrouter.com
 `);
   }
   process.exit(status);
