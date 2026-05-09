@@ -32,7 +32,7 @@ npx @benchrouter/setup models
 npx @benchrouter/setup doctor
 ```
 
-`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds the minimal `.env.example` entry for the BenchRouter API key. The generated workflow runs on the setup PR: it imports the PR commit's config file as a PR-tagged BenchRouter route, uploads that PR route's eval result, and fails the PR check if the route cannot call BenchRouter.
+`init` fetches the BenchRouter setup packet, writes scaffold files, updates `package.json`, and adds the minimal `.env.example` entry for the BenchRouter API key. The generated workflow runs on the setup PR: it asks BenchRouter for an eval plan, skips model runs when the same route/eval/covered-code fingerprint already has evidence, uploads only the model arms that need fresh evidence, and fails the PR check if the route cannot call BenchRouter.
 
 The route ID belongs at the selected LLM call site as the OpenAI-compatible `model` value. Do not add a repo-global `BENCHROUTER_MODEL`; repos with multiple routes should send a different route ID per call site.
 

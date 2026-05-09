@@ -107,6 +107,7 @@ async function init() {
 
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Replace the generated smoke eval with product-specific cases when possible.\n");
+  process.stdout.write("- Update .benchrouter/benchrouter.yml with route code_refs for selected call-site files and eval_pack.case_refs for fixture/golden files.\n");
   process.stdout.write("- Patch exactly one runtime call site to send the BenchRouter route ID as that call site's model value.\n");
   process.stdout.write("- Keep persistent config minimal: do not create a repo-global BENCHROUTER_MODEL, and do not install CI-only BenchRouter workflow variables as deploy env vars.\n");
   process.stdout.write("- Ask before installing secrets; use the generated Production key for the app and the generated GitHub Actions key for repo secrets. Do not leave them only in chat or terminal output.\n");
