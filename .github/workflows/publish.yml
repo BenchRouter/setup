@@ -31,16 +31,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - run: npm --version
       - run: node --check bin/benchrouter-setup.mjs
       - run: npm pack --dry-run
       - name: Publish to npm
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "${NPM_TOKEN:-}" ]; then
-            npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
-          fi
-          npm publish --access public
+        run: npm publish --access public --provenance
