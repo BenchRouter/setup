@@ -232,7 +232,7 @@ async function doctor() {
       ".benchrouter/upload-results.mjs",
       "pull_request",
       "preview",
-      "create_eval_run",
+      "eval-plan",
       "pull_request_number",
       "BENCHROUTER_EVAL_RUN_ID",
       "BENCHROUTER_ROUTE_ID",
