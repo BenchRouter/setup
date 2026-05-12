@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import * as readline from "node:readline/promises";
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
@@ -132,6 +133,7 @@ async function upgrade() {
   const routeId = stringArg("route-id");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
+  const autoYes = Boolean(args.yes);
   const force = Boolean(args.force);
 
   if (!bearer) {
@@ -144,36 +146,57 @@ async function upgrade() {
     usage(1, "upgrade", "Missing --route-id.");
   }
 
-  const response = await fetch(`${apiUrl}/v1/control/setup-packet/upgrade`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${bearer}`,
-      "content-type": "application/json"
-    },
-    signal: AbortSignal.timeout(30000),
-    body: JSON.stringify({ repo_full_name: repoFullName, route_id: routeId })
-  });
+  // 1. Preview — does NOT consume the upgrade token. Preview only supports the
+  //    single-use upgrade token flow; API-key auth goes straight to apply (which
+  //    is idempotent and re-runnable for API keys).
+  if (upgradeToken) {
+    const preview = await fetchUpgradePacket({
+      apiUrl,
+      bearer,
+      repoFullName,
+      routeId,
+      mode: "preview"
+    });
 
-  const responseText = await response.text();
-  if (!response.ok) {
-    fail(`Setup kit upgrade request failed (${response.status}): ${responseText.slice(0, 800)}`);
-  }
-
-  const body = JSON.parse(responseText);
-  if (!body || body.ok !== true || !Array.isArray(body.files)) {
-    fail("BenchRouter did not return a valid upgrade response.");
-  }
-
-  process.stdout.write(`Upgrading BenchRouter CI kit to ${body.setup_kit_version} for ${body.repo_full_name} / ${body.route_id}\n`);
-
-  if (dryRun) {
-    for (const file of body.files) {
+    process.stdout.write(`Planned BenchRouter CI kit upgrade to ${preview.setup_kit_version} for ${preview.repo_full_name} / ${preview.route_id}\n`);
+    for (const file of preview.files) {
       process.stdout.write(`would write ${file.path}\n`);
     }
-    return;
+
+    if (dryRun) {
+      return;
+    }
+
+    if (!autoYes) {
+      const confirmed = await confirmPrompt("Apply these changes? [y/N] ");
+      if (!confirmed) {
+        process.stdout.write("Declined. No changes written.\n");
+        return;
+      }
+    }
+  } else if (dryRun) {
+    fail("--dry-run requires --upgrade-token; the API-key apply endpoint consumes nothing but cannot be safely previewed without a token.");
+  } else if (!autoYes) {
+    const confirmed = await confirmPrompt(`Apply BenchRouter CI kit upgrade to ${repoFullName} / ${routeId}? [y/N] `);
+    if (!confirmed) {
+      process.stdout.write("Declined. No changes written.\n");
+      return;
+    }
   }
 
-  for (const file of body.files) {
+  // 2. Apply — for upgrade tokens this consumes the token, so the preview above
+  //    must succeed first. Re-derive the packet server-side; do NOT reuse the
+  //    preview response as if it were authoritative.
+  const applied = await fetchUpgradePacket({
+    apiUrl,
+    bearer,
+    repoFullName,
+    routeId,
+    mode: "apply"
+  });
+
+  process.stdout.write(`Upgrading BenchRouter CI kit to ${applied.setup_kit_version} for ${applied.repo_full_name} / ${applied.route_id}\n`);
+  for (const file of applied.files) {
     const targetPath = safeTargetPath(outputDir, file.path);
     const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
     if (previous === file.content) {
@@ -191,6 +214,65 @@ async function upgrade() {
   process.stdout.write("\nNext steps:\n");
   process.stdout.write("- Review the diff and confirm only BenchRouter-owned CI kit files changed.\n");
   process.stdout.write("- Open a PR titled \"Upgrade BenchRouter CI kit\".\n");
+}
+
+async function fetchUpgradePacket({ apiUrl, bearer, repoFullName, routeId, mode }) {
+  const endpoint = mode === "preview"
+    ? "/v1/setup/upgrade-packet/preview"
+    : "/v1/control/setup-packet/upgrade";
+
+  const response = await fetch(`${apiUrl}${endpoint}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${bearer}`,
+      "content-type": "application/json"
+    },
+    signal: AbortSignal.timeout(30000),
+    body: JSON.stringify({ repo_full_name: repoFullName, route_id: routeId })
+  });
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    if (isTokenInvalid(response.status, parseJson(responseText))) {
+      fail("Upgrade token is no longer valid (already used / expired / revoked). Mint a new one in the dashboard.");
+    }
+    const label = mode === "preview" ? "Setup kit upgrade preview" : "Setup kit upgrade apply";
+    fail(`${label} request failed (${response.status}): ${responseText.slice(0, 800)}`);
+  }
+
+  const body = parseJson(responseText);
+  if (!body || body.ok !== true || !Array.isArray(body.files)) {
+    fail("BenchRouter did not return a valid upgrade response.");
+  }
+  return body;
+}
+
+function isTokenInvalid(status, parsed) {
+  if (status === 410 || status === 404) {
+    return true;
+  }
+  const code = parsed?.error?.code;
+  if (typeof code !== "string") {
+    return false;
+  }
+  return code === "upgrade_token_used"
+    || code === "upgrade_token_expired"
+    || code === "upgrade_token_revoked"
+    || code === "invalid_upgrade_token";
+}
+
+async function confirmPrompt(question) {
+  if (!process.stdin.isTTY) {
+    fail("Cannot prompt for confirmation in a non-interactive shell. Pass --yes to auto-confirm.");
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(question)).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
 }
 
 function printSetupApiKeys(setupApiKeys) {
@@ -604,6 +686,10 @@ function parseArgs(values) {
   const parsed = { _: [] };
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
+    if (value === "-y") {
+      parsed.yes = true;
+      continue;
+    }
     if (!value.startsWith("--")) {
       parsed._.push(value);
       continue;
@@ -686,12 +772,17 @@ Options:
   npx @benchrouter/setup upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
   npx @benchrouter/setup upgrade --api-key <BENCHROUTER_API_KEY> --repo owner/repo --route-id product/route
 
+The upgrade flow previews the planned changes (without consuming the single-use
+upgrade token), prompts for confirmation, then applies. Use --yes to skip the
+prompt.
+
 Options:
   --upgrade-token <token>  Single-use token from the dashboard "Upgrade BenchRouter CI kit" banner. Falls back to BENCHROUTER_UPGRADE_TOKEN.
   --api-key <key>          BENCHROUTER_API_KEY (the value installed as a GitHub Actions repo secret). Falls back to BENCHROUTER_API_KEY env var. Ignored when --upgrade-token is set.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --output-dir <path>      Defaults to current directory.
-  --dry-run                Print planned writes without changing files.
+  --yes, -y                Skip the interactive confirmation after preview.
+  --dry-run                Preview only. Requires --upgrade-token. Never calls apply.
   --force                  Overwrite differing BenchRouter-owned kit files.
 `);
   } else {
