@@ -13,6 +13,8 @@ if (command === "init") {
   await doctor();
 } else if (command === "models") {
   await models();
+} else if (command === "upgrade") {
+  await upgrade();
 } else {
   usage(command === "help" || args.help ? 0 : 1);
 }
@@ -115,6 +117,78 @@ async function init() {
   process.stdout.write("- Confirm the BenchRouter Evals PR check passes before merging.\n");
   process.stdout.write("\nSuggested PR body:\n");
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel, writtenPaths }));
+}
+
+async function upgrade() {
+  if (args.help) {
+    usage(0, "upgrade");
+  }
+
+  const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
+  const apiKey = stringArg("api-key", process.env.BENCHROUTER_API_KEY);
+  const repoFullName = stringArg("repo") ?? detectGitHubRepo();
+  const routeId = stringArg("route-id");
+  const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
+  const dryRun = Boolean(args["dry-run"]);
+  const force = Boolean(args.force);
+
+  if (!apiKey) {
+    fail("Missing BenchRouter API key. Pass --api-key or set BENCHROUTER_API_KEY (the value installed as the GitHub Actions repo secret).");
+  }
+  if (!repoFullName) {
+    usage(1, "upgrade", "Missing --repo and unable to detect one from git remote.");
+  }
+  if (!routeId) {
+    usage(1, "upgrade", "Missing --route-id.");
+  }
+
+  const response = await fetch(`${apiUrl}/v1/control/setup-packet/upgrade`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json"
+    },
+    signal: AbortSignal.timeout(30000),
+    body: JSON.stringify({ repo_full_name: repoFullName, route_id: routeId })
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    fail(`Setup kit upgrade request failed (${response.status}): ${responseText.slice(0, 800)}`);
+  }
+
+  const body = JSON.parse(responseText);
+  if (!body || body.ok !== true || !Array.isArray(body.files)) {
+    fail("BenchRouter did not return a valid upgrade response.");
+  }
+
+  process.stdout.write(`Upgrading BenchRouter CI kit to ${body.setup_kit_version} for ${body.repo_full_name} / ${body.route_id}\n`);
+
+  if (dryRun) {
+    for (const file of body.files) {
+      process.stdout.write(`would write ${file.path}\n`);
+    }
+    return;
+  }
+
+  for (const file of body.files) {
+    const targetPath = safeTargetPath(outputDir, file.path);
+    const previous = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
+    if (previous === file.content) {
+      process.stdout.write(`unchanged ${file.path}\n`);
+      continue;
+    }
+    if (previous !== null && !force) {
+      fail(`${file.path} already exists and differs. Re-run with --force to overwrite it.`);
+    }
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, file.content);
+    process.stdout.write(`${previous === null ? "created" : "updated"} ${file.path}\n`);
+  }
+
+  process.stdout.write("\nNext steps:\n");
+  process.stdout.write("- Review the diff and confirm only BenchRouter-owned CI kit files changed.\n");
+  process.stdout.write("- Open a PR titled \"Upgrade BenchRouter CI kit\".\n");
 }
 
 function printSetupApiKeys(setupApiKeys) {
@@ -605,9 +679,21 @@ Options:
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --filter <text>          Print only enabled IDs containing this text.
 `);
+  } else if (commandName === "upgrade") {
+    stream.write(`Usage:
+  npx @benchrouter/setup upgrade --repo owner/repo --route-id product/route --api-key <BENCHROUTER_API_KEY>
+
+Options:
+  --api-key <key>          The BENCHROUTER_API_KEY installed as a GitHub Actions repo secret. Falls back to the BENCHROUTER_API_KEY env var.
+  --api-url <url>          Defaults to https://api.benchrouter.com.
+  --output-dir <path>      Defaults to current directory.
+  --dry-run                Print planned writes without changing files.
+  --force                  Overwrite differing BenchRouter-owned kit files.
+`);
   } else {
     stream.write(`Usage:
   npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
+  npx @benchrouter/setup upgrade --repo owner/repo --route-id product/route --api-key <key>
   npx @benchrouter/setup models
   npx @benchrouter/setup doctor
   npx @benchrouter/setup doctor --repo owner/repo --api-url https://api.benchrouter.com
