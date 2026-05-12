@@ -125,15 +125,17 @@ async function upgrade() {
   }
 
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
-  const apiKey = stringArg("api-key", process.env.BENCHROUTER_API_KEY);
+  const upgradeToken = stringArg("upgrade-token", process.env.BENCHROUTER_UPGRADE_TOKEN);
+  const apiKey = upgradeToken ? undefined : stringArg("api-key", process.env.BENCHROUTER_API_KEY);
+  const bearer = upgradeToken ?? apiKey;
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
   const routeId = stringArg("route-id");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
   const force = Boolean(args.force);
 
-  if (!apiKey) {
-    fail("Missing BenchRouter API key. Pass --api-key or set BENCHROUTER_API_KEY (the value installed as the GitHub Actions repo secret).");
+  if (!bearer) {
+    fail("Missing BenchRouter credential. Pass --upgrade-token (from the dashboard banner) or --api-key/BENCHROUTER_API_KEY.");
   }
   if (!repoFullName) {
     usage(1, "upgrade", "Missing --repo and unable to detect one from git remote.");
@@ -145,7 +147,7 @@ async function upgrade() {
   const response = await fetch(`${apiUrl}/v1/control/setup-packet/upgrade`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${apiKey}`,
+      authorization: `Bearer ${bearer}`,
       "content-type": "application/json"
     },
     signal: AbortSignal.timeout(30000),
@@ -681,10 +683,12 @@ Options:
 `);
   } else if (commandName === "upgrade") {
     stream.write(`Usage:
-  npx @benchrouter/setup upgrade --repo owner/repo --route-id product/route --api-key <BENCHROUTER_API_KEY>
+  npx @benchrouter/setup upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
+  npx @benchrouter/setup upgrade --api-key <BENCHROUTER_API_KEY> --repo owner/repo --route-id product/route
 
 Options:
-  --api-key <key>          The BENCHROUTER_API_KEY installed as a GitHub Actions repo secret. Falls back to the BENCHROUTER_API_KEY env var.
+  --upgrade-token <token>  Single-use token from the dashboard "Upgrade BenchRouter CI kit" banner. Falls back to BENCHROUTER_UPGRADE_TOKEN.
+  --api-key <key>          BENCHROUTER_API_KEY (the value installed as a GitHub Actions repo secret). Falls back to BENCHROUTER_API_KEY env var. Ignored when --upgrade-token is set.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --output-dir <path>      Defaults to current directory.
   --dry-run                Print planned writes without changing files.
@@ -693,7 +697,7 @@ Options:
   } else {
     stream.write(`Usage:
   npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model
-  npx @benchrouter/setup upgrade --repo owner/repo --route-id product/route --api-key <key>
+  npx @benchrouter/setup upgrade --upgrade-token br_upgrade_... --repo owner/repo --route-id product/route
   npx @benchrouter/setup models
   npx @benchrouter/setup doctor
   npx @benchrouter/setup doctor --repo owner/repo --api-url https://api.benchrouter.com
