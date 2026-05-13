@@ -36,6 +36,8 @@ npx @benchrouter/setup doctor
 
 The generated eval harness reads `.benchrouter/cases.json` and fails until the repo has at least three non-TODO route-specific cases with distinct inputs, including one critical case. There is no passing smoke eval.
 
+BenchRouter eval is not a substitute for product CI. If provider wiring changes at a selected call site, update existing product tests/mocks so they exercise the BenchRouter-wired runtime path, then run the relevant product tests/build before opening the setup PR.
+
 The route ID belongs at the selected LLM call site as the OpenAI-compatible `model` value. Do not add a repo-global `BENCHROUTER_MODEL`; repos with multiple routes should send a different route ID per call site.
 
 `models` prints exact enabled BenchRouter model IDs, one per line. If `init` rejects the repo's current incumbent model, do not silently substitute another model. Use `models` only to inspect enabled IDs, then rerun `init` after the user explicitly approves one exact replacement.

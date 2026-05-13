@@ -114,9 +114,10 @@ async function init() {
   process.stdout.write("- Fill .benchrouter/cases.json with at least 3 real route-specific cases, including 1 critical case.\n");
   process.stdout.write("- Update .benchrouter/benchrouter.yml with route code_refs for selected call-site files and eval_pack.case_refs for fixture/golden files.\n");
   process.stdout.write("- Patch exactly one runtime call site to send the BenchRouter route ID as that call site's model value.\n");
+  process.stdout.write("- Update existing product tests/mocks for that call site so they cover the BenchRouter-wired runtime path.\n");
   process.stdout.write("- Keep persistent config minimal and never create a repo-global BENCHROUTER_MODEL.\n");
   process.stdout.write("- Ask before installing secrets; Production key goes to the app runtime, GitHub Actions key goes to the repo secret named BENCHROUTER_API_KEY.\n");
-  process.stdout.write("- Run this same setup CLI's `doctor` command before opening the PR.\n");
+  process.stdout.write("- Run relevant product tests/build and this same setup CLI's `doctor` command before opening the PR.\n");
   process.stdout.write("- Confirm the BenchRouter Evals PR check passes before merging.\n");
   process.stdout.write("\nSuggested PR body:\n");
   process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
