@@ -379,11 +379,6 @@ async function doctor() {
     }
     if (!manifest.incumbentModel) {
       failures.push(".benchrouter/benchrouter.yml missing seed.incumbent_model");
-    } else if (!args["skip-model-check"]) {
-      const allowedModels = await fetchAllowedModels(apiUrl, failures);
-      if (allowedModels && !allowedModels.has(manifest.incumbentModel)) {
-        failures.push(`seed.incumbent_model is not in the BenchRouter catalog: ${manifest.incumbentModel}`);
-      }
     }
   }
 
@@ -478,15 +473,6 @@ async function doctor() {
   process.stdout.write("BenchRouter setup doctor passed.\n");
 }
 
-async function fetchAllowedModels(apiUrl, failures) {
-  try {
-    return new Set(await fetchModelIds(apiUrl));
-  } catch (error) {
-    failures.push(`could not fetch BenchRouter model catalog: ${error instanceof Error ? error.message : "request failed"}`);
-    return null;
-  }
-}
-
 async function fetchModelIds(apiUrl) {
   const response = await fetch(`${apiUrl}/v1/models`, { signal: AbortSignal.timeout(10000) });
   if (!response.ok) {
@@ -543,19 +529,19 @@ function isUnsupportedIncumbentModel(status, error) {
 function unsupportedIncumbentMessage(modelId) {
   return `BenchRouter setup stopped before writing files.
 
-The incumbent model from this repo is not currently enabled:
+The incumbent model from this repo was not accepted by BenchRouter/OpenRouter:
   ${modelId}
 
 Do not replace it automatically. A replacement changes runtime behavior.
 
 Next steps:
-Stop and ask the user for one exact enabled model ID.
+Stop and ask the user for one exact OpenRouter model ID.
 
-To inspect exact enabled IDs, run:
+To inspect curated BenchRouter candidate IDs, run:
    npx github:BenchRouter/setup models
 
 Re-run init only after the user explicitly approves that exact ID:
-   npx github:BenchRouter/setup init ... --incumbent-model <enabled-provider/model-id>`;
+   npx github:BenchRouter/setup init ... --incumbent-model <provider/model-id>`;
 }
 
 function parseJson(text) {

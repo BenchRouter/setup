@@ -40,9 +40,9 @@ BenchRouter eval is not a substitute for product CI. If provider wiring changes 
 
 The route ID belongs at the selected LLM call site as the OpenAI-compatible `model` value. Do not add a repo-global `BENCHROUTER_MODEL`; repos with multiple routes should send a different route ID per call site.
 
-`models` prints exact enabled BenchRouter model IDs, one per line. If `init` rejects the repo's current incumbent model, do not silently substitute another model. Use `models` only to inspect enabled IDs, then rerun `init` after the user explicitly approves one exact replacement.
+`models` prints curated BenchRouter candidate model IDs, one per line. BenchRouter route manifests accept any OpenRouter model ID as the incumbent. If `init` rejects the repo's current incumbent model because OpenRouter does not recognize it, do not silently substitute another model; rerun `init` only after the user explicitly approves one exact replacement.
 
-`doctor` validates expected BenchRouter files, real eval case coverage, package script and dependencies, env example entries, generated helper syntax, PR workflow wiring, and incumbent model id against the BenchRouter catalog. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
+`doctor` validates expected BenchRouter files, real eval case coverage, package script and dependencies, env example entries, generated helper syntax, and PR workflow wiring. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
 
 Before opening a PR, use:
 
