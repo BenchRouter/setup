@@ -36,7 +36,8 @@ async function init() {
   const incumbentModel = stringArg("incumbent-model");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
-  const force = Boolean(args.force);
+  const overwriteUserEdits = Boolean(args["overwrite-user-edits"]);
+  const forceKitFiles = Boolean(args.force);
 
   if (!setupCode) {
     fail("Missing setup key. Pass --setup-key or set BENCHROUTER_SETUP_KEY.");
@@ -78,8 +79,9 @@ async function init() {
       writtenPaths.push(file.path);
       continue;
     }
-    if (previous !== null && !force) {
-      fail(`${file.path} already exists and differs. Re-run with --force to overwrite it.`);
+    if (previous !== null && !overwriteUserEdits && !(forceKitFiles && isBenchRouterKitFile(file.path))) {
+      process.stdout.write(`skip-existing ${file.path}\n`);
+      continue;
     }
     await mkdir(path.dirname(targetPath), { recursive: true });
     await writeFile(targetPath, file.content);
@@ -109,15 +111,15 @@ async function init() {
   printSetupApiKeys(setupApiKeys);
 
   process.stdout.write("\nNext steps:\n");
-  process.stdout.write("- Replace the generated smoke eval with product-specific cases when possible.\n");
+  process.stdout.write("- Fill .benchrouter/cases.json with at least 3 real route-specific cases, including 1 critical case.\n");
   process.stdout.write("- Update .benchrouter/benchrouter.yml with route code_refs for selected call-site files and eval_pack.case_refs for fixture/golden files.\n");
   process.stdout.write("- Patch exactly one runtime call site to send the BenchRouter route ID as that call site's model value.\n");
-  process.stdout.write("- Keep persistent config minimal: do not create a repo-global BENCHROUTER_MODEL, and do not install CI-only BenchRouter workflow variables as deploy env vars.\n");
-  process.stdout.write("- Ask before installing secrets; use the generated Production key for the app and the generated GitHub Actions key for repo secrets. Do not leave them only in chat or terminal output.\n");
+  process.stdout.write("- Keep persistent config minimal and never create a repo-global BENCHROUTER_MODEL.\n");
+  process.stdout.write("- Ask before installing secrets; Production key goes to the app runtime, GitHub Actions key goes to the repo secret named BENCHROUTER_API_KEY.\n");
   process.stdout.write("- Run this same setup CLI's `doctor` command before opening the PR.\n");
   process.stdout.write("- Confirm the BenchRouter Evals PR check passes before merging.\n");
   process.stdout.write("\nSuggested PR body:\n");
-  process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel, writtenPaths }));
+  process.stdout.write(prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }));
 }
 
 async function upgrade() {
@@ -353,7 +355,8 @@ async function doctor() {
   const failures = [];
   const requiredFiles = [
     ".benchrouter/benchrouter.yml",
-    ".benchrouter/benchrouter-kit.json",
+    ".benchrouter/.kit-state.json",
+    ".benchrouter/cases.json",
     ".benchrouter/upload-results.mjs",
     ".github/workflows/benchrouter-evals.yml",
     "scripts/benchrouter-eval.ts"
@@ -389,9 +392,10 @@ async function doctor() {
     for (const snippet of [
       ".benchrouter/upload-results.mjs",
       "pull_request",
-      "preview",
+      "workflow_dispatch",
       "eval-plan",
       "pull_request_number",
+      "head_sha",
       "BENCHROUTER_EVAL_RUN_ID",
       "BENCHROUTER_ROUTE_ID",
       "BENCHROUTER_API_KEY",
@@ -402,6 +406,11 @@ async function doctor() {
         failures.push(`workflow missing ${snippet}`);
       }
     }
+  }
+
+  const casesPath = path.join(root, ".benchrouter/cases.json");
+  if (existsSync(casesPath)) {
+    validateCasesForDoctor(casesPath, failures);
   }
 
   const uploadHelperPath = path.join(root, ".benchrouter/upload-results.mjs");
@@ -420,8 +429,10 @@ async function doctor() {
     if (parsed.scripts?.["benchrouter:eval"] !== "tsx scripts/benchrouter-eval.ts") {
       failures.push("package.json missing scripts.benchrouter:eval");
     }
-    if (!parsed.devDependencies?.tsx && !parsed.dependencies?.tsx) {
-      failures.push("package.json missing tsx dependency");
+    for (const dependency of ["tsx", "@types/node"]) {
+      if (!parsed.devDependencies?.[dependency] && !parsed.dependencies?.[dependency]) {
+        failures.push(`package.json missing ${dependency} dependency`);
+      }
     }
   }
 
@@ -491,6 +502,36 @@ async function fetchModelIds(apiUrl) {
   return ids;
 }
 
+function validateCasesForDoctor(casesPath, failures) {
+  let cases;
+  try {
+    cases = JSON.parse(readFileSync(casesPath, "utf8"));
+  } catch (error) {
+    failures.push(`.benchrouter/cases.json is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`);
+    return;
+  }
+  if (!Array.isArray(cases)) {
+    failures.push(".benchrouter/cases.json must be a JSON array");
+    return;
+  }
+  const realCases = cases.filter((testCase) => !isTodoCase(testCase));
+  const distinctInputs = new Set(realCases.map((testCase) => JSON.stringify(testCase.messages)));
+  const criticalCount = realCases.filter((testCase) => testCase?.critical === true).length;
+  if (realCases.length < 3 || distinctInputs.size < 3 || criticalCount < 1) {
+    failures.push(".benchrouter/cases.json needs at least 3 non-TODO cases with distinct inputs and at least 1 critical case");
+  }
+}
+
+function isTodoCase(testCase) {
+  return (
+    !testCase ||
+    String(testCase.expected_behavior ?? "").trim().toUpperCase() === "TODO" ||
+    !Array.isArray(testCase.expected_substrings) ||
+    testCase.expected_substrings.length === 0 ||
+    testCase.expected_substrings.some((value) => String(value).trim().toUpperCase() === "TODO")
+  );
+}
+
 function isUnsupportedIncumbentModel(status, error) {
   if (status !== 400 || !error || typeof error !== "object") {
     return false;
@@ -507,10 +548,12 @@ The incumbent model from this repo is not currently enabled:
 Do not replace it automatically. A replacement changes runtime behavior.
 
 Next steps:
-1. Pause setup while BenchRouter adds/enables ${modelId}.
-2. To inspect exact enabled IDs, run:
+Stop and ask the user for one exact enabled model ID.
+
+To inspect exact enabled IDs, run:
    npx github:BenchRouter/setup models
-3. Re-run init only after the user explicitly approves one exact enabled model ID:
+
+Re-run init only after the user explicitly approves that exact ID:
    npx github:BenchRouter/setup init ... --incumbent-model <enabled-provider/model-id>`;
 }
 
@@ -599,6 +642,15 @@ function updatePackageJson(packageJsonPath, packageJsonInstructions) {
   return true;
 }
 
+function isBenchRouterKitFile(relativePath) {
+  return [
+    ".benchrouter/.gitignore",
+    ".benchrouter/.kit-state.json",
+    ".benchrouter/upload-results.mjs",
+    ".github/workflows/benchrouter-evals.yml"
+  ].includes(relativePath);
+}
+
 async function updateEnvExample(root, runtimeEnv) {
   const envPath = path.join(root, ".env.example");
   const previous = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
@@ -621,35 +673,19 @@ async function updateEnvExample(root, runtimeEnv) {
   return true;
 }
 
-function prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel, writtenPaths }) {
+function prBodyTemplate({ targetRepo, routeId, routeName, incumbentModel }) {
   return `## BenchRouter setup
 
 Repo: ${targetRepo}
 Route: ${routeName} (${routeId})
 Incumbent model: ${incumbentModel}
 
-### Files changed
-${writtenPaths.map((item) => `- ${item}`).join("\n")}
+### Call site changed + route ID
+- Route ID: ${routeId}
+- TODO: summarize the one runtime call site changed.
 
-### LLM call sites discovered
-- TODO: list file paths, provider clients, models, base URLs, and env vars.
-
-### Selected first route
-- TODO: explain which call site was routed through BenchRouter and why.
-
-### Eval coverage
-- TODO: list product cases wrapped or added, plus uncovered gaps.
-
-### Secrets
-- Production BENCHROUTER_API_KEY: TODO installed in app secret manager, or blocked with exact manual destination.
-- GitHub Actions BENCHROUTER_API_KEY: TODO installed in repo secrets, or blocked with exact manual destination.
-- CI-only BenchRouter workflow variables: TODO confirm none were installed as persistent app env vars or repo secrets.
-
-### Checks run
-- TODO: include local tests, the setup CLI doctor command, and the BenchRouter Evals PR check URL/status.
-
-### PR check note
-- Use a branch in this repository, not a fork, when possible so the GitHub Actions secret is available to the BenchRouter Evals check.
+### Eval cases authored
+- TODO: count cases and describe coverage in one line.
 
 ### Rollback
 1. Set the selected call site's base URL back to the previous provider.
@@ -756,7 +792,8 @@ Options:
   --repo owner/repo
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --dry-run                Print planned writes without changing files.
-  --force                  Overwrite differing BenchRouter-generated files.
+  --force                  Overwrite BenchRouter-owned workflow/upload/kit files only.
+  --overwrite-user-edits   Overwrite existing differing files.
   --output-dir <path>      Defaults to current directory.
 `);
   } else if (commandName === "models") {
