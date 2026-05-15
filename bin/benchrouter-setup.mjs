@@ -389,7 +389,6 @@ async function doctor() {
       ".benchrouter/upload-results.mjs",
       "pull_request",
       "workflow_dispatch",
-      "eval-plan",
       "pull_request_number",
       "head_sha",
       "BENCHROUTER_EVAL_RUN_ID",
@@ -411,6 +410,18 @@ async function doctor() {
 
   const uploadHelperPath = path.join(root, ".benchrouter/upload-results.mjs");
   if (existsSync(uploadHelperPath)) {
+    const helper = readFileSync(uploadHelperPath, "utf8");
+    for (const snippet of [
+      "plan-pr",
+      "/v1/control/eval-plan",
+      "/v1/control/import-github-config",
+      "/arm-results",
+      "validate-dispatch"
+    ]) {
+      if (!helper.includes(snippet)) {
+        failures.push(`upload helper missing ${snippet}`);
+      }
+    }
     const check = spawnSync(process.execPath, ["--check", uploadHelperPath], { encoding: "utf8" });
     if (check.status !== 0) {
       failures.push(`.benchrouter/upload-results.mjs failed node --check: ${(check.stderr || check.stdout).trim()}`);
