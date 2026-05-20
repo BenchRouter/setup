@@ -40,6 +40,26 @@ BenchRouter eval is not a substitute for product CI. If provider wiring changes 
 
 The route ID belongs at the selected LLM call site as the OpenAI-compatible `model` value. Do not add a repo-global `BENCHROUTER_MODEL`; repos with multiple routes should send a different route ID per call site.
 
+## Multiple routes
+
+A repo can evaluate any number of routes. Routes live under `routes:` in `.benchrouter/benchrouter.yml`. The generated GitHub Actions workflow derives a matrix from that file at CI time and runs one independent eval per route — each route gets its own candidate selection, its own eval run, and its own PR gate. To add a route later, edit `.benchrouter/benchrouter.yml` only; you do not regenerate the workflow.
+
+Scaffold several routes at once by repeating `--route-id`/`--name`/`--incumbent-model` (paired in order; the first triple is the primary route):
+
+```bash
+npx @benchrouter/setup init --setup-key br_setup_... \
+  --route-id product/route-a --name "Route A" --incumbent-model provider/model-a \
+  --route-id product/route-b --name "Route B" --incumbent-model provider/model-b
+```
+
+### Keying cases by route
+
+Each entry in `.benchrouter/cases.json` may carry a `route` field set to the **stable** route ID (the `route_id` in `benchrouter.yml`). The CI eval runner selects the cases whose `route` matches the route under test; a case with no `route` runs for every route, so single-route repos need no annotation.
+
+### Stable vs PR-tagged route IDs
+
+On a pull request BenchRouter creates a PR-tagged preview route id (`<route>-pr-<N>`) so preview traffic is isolated. The eval runner sends that PR-tagged id to the proxy as the `model` value, but selects cases by the **stable** id, which the CI kit exposes as `BENCHROUTER_BASE_ROUTE_ID`. Do not derive the stable id by string-stripping the `-pr-...` suffix (it is not always reversible). Keep all runtime call sites on the stable route id; during a PR's eval window BenchRouter auto-resolves the stable id to that PR's matching PR-tagged preview route, so no deployment-context headers are needed.
+
 `models` prints curated BenchRouter candidate model IDs, one per line. BenchRouter route manifests accept any OpenRouter model ID as the incumbent. If `init` rejects the repo's current incumbent model because OpenRouter does not recognize it, do not silently substitute another model; rerun `init` only after the user explicitly approves one exact replacement.
 
 `doctor` validates expected BenchRouter files, real eval case coverage, package script and dependencies, env example entries, generated helper syntax, and PR workflow wiring. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.

@@ -31,9 +31,13 @@ async function init() {
     stringArg("setup-code", process.env.BENCHROUTER_SETUP_KEY ?? process.env.BENCHROUTER_SETUP_CODE)
   );
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
-  const routeId = stringArg("route-id");
-  const routeName = stringArg("name");
-  const incumbentModel = stringArg("incumbent-model");
+  // --route-id / --name / --incumbent-model may be repeated to scaffold multiple
+  // routes in one init. They are paired positionally: the Nth --route-id goes
+  // with the Nth --name and Nth --incumbent-model. The first triple is primary.
+  const routeIds = arrayArg("route-id");
+  const routeNames = arrayArg("name");
+  const incumbentModels = arrayArg("incumbent-model");
+  const codeRefs = arrayArg("code-ref");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
   const overwriteUserEdits = Boolean(args["overwrite-user-edits"]);
@@ -42,17 +46,28 @@ async function init() {
   if (!setupCode) {
     fail("Missing setup key. Pass --setup-key or set BENCHROUTER_SETUP_KEY.");
   }
-  if (!routeId || !routeName || !incumbentModel) {
+  if (routeIds.length === 0 || routeNames.length === 0 || incumbentModels.length === 0) {
     usage(1, "init", "Missing --route-id, --name, or --incumbent-model.");
   }
+  if (routeIds.length !== routeNames.length || routeIds.length !== incumbentModels.length) {
+    usage(1, "init", "When repeating routes, pass one --name and one --incumbent-model per --route-id (in the same order).");
+  }
+
+  const routeSpecs = routeIds.map((id, index) => ({
+    route_id: id,
+    name: routeNames[index],
+    incumbent_model: incumbentModels[index],
+    code_refs: codeRefs
+  }));
+  const routeId = routeSpecs[0].route_id;
+  const routeName = routeSpecs[0].name;
+  const incumbentModel = routeSpecs[0].incumbent_model;
 
   const packetResponse = await fetchSetupPacket({
     apiUrl,
     setupCode,
     repoFullName,
-    routeId,
-    routeName,
-    incumbentModel,
+    routeSpecs,
     dryRun
   });
   const packet = packetResponse.setup_packet;
@@ -287,15 +302,24 @@ function printSetupApiKeys(setupApiKeys) {
   process.stdout.write(`- GitHub Actions BENCHROUTER_API_KEY: ${setupApiKeys.github_actions.key}\n`);
 }
 
-async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeId, routeName, incumbentModel, dryRun }) {
+async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, dryRun }) {
+  const [primary, ...additional] = routeSpecs;
   const body = {
     repo_full_name: repoFullName,
     dry_run: dryRun ? true : undefined,
     route: {
-      route_id: routeId,
-      name: routeName,
-      incumbent_model: incumbentModel
-    }
+      route_id: primary.route_id,
+      name: primary.name,
+      incumbent_model: primary.incumbent_model,
+      code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined
+    },
+    routes: additional.length > 0
+      ? additional.map((spec) => ({
+          route_id: spec.route_id,
+          name: spec.name,
+          incumbent_model: spec.incumbent_model
+        }))
+      : undefined
   };
 
   const response = await fetch(`${apiUrl}/v1/control/setup-packet`, {
@@ -314,7 +338,7 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeId, rout
     const parsed = parseJson(responseText);
     const error = parsed?.error;
     if (isUnsupportedIncumbentModel(response.status, error)) {
-      fail(unsupportedIncumbentMessage(incumbentModel));
+      fail(unsupportedIncumbentMessage(primary.incumbent_model));
     }
     fail(`Setup packet request failed (${response.status}): ${responseText.slice(0, 800)}`);
   }
@@ -758,6 +782,19 @@ function stringArg(name, fallback) {
   return fallback;
 }
 
+// Returns every value passed for a repeatable flag, in CLI order. A flag given
+// once yields a single-element array; absent flags yield an empty array.
+function arrayArg(name) {
+  const value = args[name];
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item));
+  }
+  if (typeof value === "string") {
+    return [value];
+  }
+  return [];
+}
+
 function stripUndefined(value) {
   if (Array.isArray(value)) {
     return value.map(stripUndefined);
@@ -786,8 +823,20 @@ function usage(status, commandName = "all", message) {
     stream.write(`Usage:
   npx @benchrouter/setup init --setup-key br_setup_... --route-id product/route --name "Route Name" --incumbent-model provider/model [options]
 
+Multiple routes (paired in order; first triple is primary):
+  npx @benchrouter/setup init --setup-key br_setup_... \\
+    --route-id product/route-a --name "Route A" --incumbent-model provider/model-a \\
+    --route-id product/route-b --name "Route B" --incumbent-model provider/model-b
+
+Routes share one product. After init you can add more routes by editing
+.benchrouter/benchrouter.yml; the workflow matrixes over every listed route.
+
 Options:
   --repo owner/repo
+  --route-id <id>         Repeatable. Pair each with one --name and one --incumbent-model.
+  --name <text>           Repeatable. Display name for the matching --route-id.
+  --incumbent-model <id>  Repeatable. Incumbent model for the matching --route-id.
+  --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --dry-run                Print planned writes without changing files.
   --force                  Overwrite BenchRouter-owned workflow/upload/kit files only.
