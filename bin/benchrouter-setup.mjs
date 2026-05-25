@@ -381,8 +381,8 @@ async function doctor() {
   const requiredFiles = [
     ".benchrouter/benchrouter.yml",
     ".benchrouter/.kit-state.json",
-    ".benchrouter/cases.json",
     ".benchrouter/upload-results.mjs",
+    ".benchrouter/sidecar.mjs",
     ".github/workflows/benchrouter-evals.yml",
     "scripts/benchrouter-eval.ts"
   ];
@@ -393,16 +393,20 @@ async function doctor() {
     }
   }
 
-  const manifestPath = path.join(root, ".benchrouter/benchrouter.yml");
-  const manifest = existsSync(manifestPath) ? parseManifestForDoctor(readFileSync(manifestPath, "utf8")) : null;
-  if (manifest) {
-    if (!manifest.routeId) {
-      failures.push(".benchrouter/benchrouter.yml missing route_id");
-    } else if (!/^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/i.test(manifest.routeId)) {
-      failures.push(`.benchrouter/benchrouter.yml route_id must look like product/route: ${manifest.routeId}`);
-    }
-    if (!manifest.incumbentModel) {
-      failures.push(".benchrouter/benchrouter.yml missing seed.incumbent_model");
+  // Discover per-route scorer + cases files declared in the v2 kit-state manifest.
+  const kitStatePath = path.join(root, ".benchrouter/.kit-state.json");
+  const routeFiles = discoverRouteFilesFromKitState(kitStatePath, root, failures);
+
+  // Validate each route: cases must have ≥1 real captured case, scorer must pass node --check.
+  for (const { casesPath, casesRelPath } of routeFiles) {
+    validateCasesForDoctor(casesPath, casesRelPath, failures);
+  }
+  for (const { scorerPath, scorerRelPath } of routeFiles) {
+    if (existsSync(scorerPath)) {
+      const check = spawnSync(process.execPath, ["--check", scorerPath], { encoding: "utf8" });
+      if (check.status !== 0) {
+        failures.push(`${scorerRelPath} failed node --check: ${(check.stderr || check.stdout).trim()}`);
+      }
     }
   }
 
@@ -413,8 +417,6 @@ async function doctor() {
       ".benchrouter/upload-results.mjs",
       "pull_request",
       "workflow_dispatch",
-      "pull_request_number",
-      "head_sha",
       "BENCHROUTER_EVAL_RUN_ID",
       "BENCHROUTER_ROUTE_ID",
       "BENCHROUTER_API_KEY",
@@ -427,11 +429,6 @@ async function doctor() {
     }
   }
 
-  const casesPath = path.join(root, ".benchrouter/cases.json");
-  if (existsSync(casesPath)) {
-    validateCasesForDoctor(casesPath, failures);
-  }
-
   const uploadHelperPath = path.join(root, ".benchrouter/upload-results.mjs");
   if (existsSync(uploadHelperPath)) {
     const helper = readFileSync(uploadHelperPath, "utf8");
@@ -440,7 +437,9 @@ async function doctor() {
       "/v1/control/eval-plan",
       "/v1/control/import-github-config",
       "/arm-results",
-      "validate-dispatch"
+      "validate-dispatch",
+      "pull_request_number",
+      "head_sha"
     ]) {
       if (!helper.includes(snippet)) {
         failures.push(`upload helper missing ${snippet}`);
@@ -524,34 +523,69 @@ async function fetchModelIds(apiUrl) {
   return ids;
 }
 
-function validateCasesForDoctor(casesPath, failures) {
+function discoverRouteFilesFromKitState(kitStatePath, root, failures) {
+  if (!existsSync(kitStatePath)) {
+    return [];
+  }
+  let kitState;
+  try {
+    kitState = JSON.parse(readFileSync(kitStatePath, "utf8"));
+  } catch (error) {
+    failures.push(`.benchrouter/.kit-state.json is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`);
+    return [];
+  }
+  const files = Array.isArray(kitState?.files) ? kitState.files : [];
+  const scorerEntries = files.filter(
+    (f) => typeof f?.path === "string" && /^\.benchrouter\/scorer\.[^/]+\.js$/.test(f.path)
+  );
+  const casesEntries = files.filter(
+    (f) => typeof f?.path === "string" && /^\.benchrouter\/cases\.[^/]+\.json$/.test(f.path)
+  );
+
+  const routeFiles = [];
+  for (const scorer of scorerEntries) {
+    const tokenMatch = scorer.path.match(/^\.benchrouter\/scorer\.(.+)\.js$/);
+    if (!tokenMatch) continue;
+    const token = tokenMatch[1];
+    const casesRelPath = `.benchrouter/cases.${token}.json`;
+    routeFiles.push({
+      token,
+      scorerPath: path.join(root, scorer.path),
+      scorerRelPath: scorer.path,
+      casesPath: path.join(root, casesRelPath),
+      casesRelPath,
+      kitCasesEntry: casesEntries.find((f) => f.path === casesRelPath)
+    });
+  }
+  if (routeFiles.length === 0) {
+    failures.push(".benchrouter/.kit-state.json lists no scorer files — re-run init or upgrade to get a v2 kit");
+  }
+  return routeFiles;
+}
+
+function validateCasesForDoctor(casesPath, relPath, failures) {
+  if (!existsSync(casesPath)) {
+    failures.push(`missing ${relPath}`);
+    return;
+  }
   let cases;
   try {
     cases = JSON.parse(readFileSync(casesPath, "utf8"));
   } catch (error) {
-    failures.push(`.benchrouter/cases.json is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`);
+    failures.push(`${relPath} is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`);
     return;
   }
   if (!Array.isArray(cases)) {
-    failures.push(".benchrouter/cases.json must be a JSON array");
+    failures.push(`${relPath} must be a JSON array`);
     return;
   }
-  const realCases = cases.filter((testCase) => !isTodoCase(testCase));
-  const distinctInputs = new Set(realCases.map((testCase) => JSON.stringify(testCase.messages)));
-  const criticalCount = realCases.filter((testCase) => testCase?.critical === true).length;
-  if (realCases.length < 3 || distinctInputs.size < 3 || criticalCount < 1) {
-    failures.push(".benchrouter/cases.json needs at least 3 non-TODO cases with distinct inputs and at least 1 critical case");
-  }
-}
-
-function isTodoCase(testCase) {
-  return (
-    !testCase ||
-    String(testCase.expected_behavior ?? "").trim().toUpperCase() === "TODO" ||
-    !Array.isArray(testCase.expected_substrings) ||
-    testCase.expected_substrings.length === 0 ||
-    testCase.expected_substrings.some((value) => String(value).trim().toUpperCase() === "TODO")
+  // A real captured case has a non-empty messages array, non-null reference_output, and no _README stub key.
+  const realCases = cases.filter(
+    (c) => c && !("_README" in c) && Array.isArray(c.messages) && c.messages.length > 0 && c.reference_output !== null && c.reference_output !== undefined
   );
+  if (realCases.length === 0) {
+    failures.push(`${relPath} has no captured cases yet — run the capture step (sidecar) before opening the PR`);
+  }
 }
 
 function isUnsupportedIncumbentModel(status, error) {
@@ -585,24 +619,6 @@ function parseJson(text) {
   } catch {
     return null;
   }
-}
-
-function parseManifestForDoctor(text) {
-  return {
-    routeId: yamlScalarValue(text.match(/^\s*-?\s*route_id:\s*(.+)$/m)?.[1]),
-    incumbentModel: yamlScalarValue(text.match(/^\s*incumbent_model:\s*(.+)$/m)?.[1])
-  };
-}
-
-function yamlScalarValue(value) {
-  if (!value) {
-    return null;
-  }
-  const trimmed = value.trim();
-  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed.split(/\s+#/)[0].trim();
 }
 
 function verifyGitHubActionsSecret(repoFullName, failures) {
