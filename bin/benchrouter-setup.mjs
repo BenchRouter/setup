@@ -126,8 +126,8 @@ async function init() {
   printSetupApiKeys(setupApiKeys);
 
   process.stdout.write("\nNext steps:\n");
-  process.stdout.write("- Fill .benchrouter/cases.json with at least 3 real route-specific cases, including 1 critical case.\n");
-  process.stdout.write("- Update .benchrouter/benchrouter.yml with route code_refs for selected call-site files and eval_pack.case_refs for fixture/golden files.\n");
+  process.stdout.write("- Run the capture flow so each route's eval_pack.case_refs file (for example .benchrouter/cases.<route>.json) contains real captured cases.\n");
+  process.stdout.write("- Update .benchrouter/benchrouter.yml with route code_refs for selected call-site files; eval_pack.scorer and eval_pack.case_refs already point at per-route files.\n");
   process.stdout.write("- Patch exactly one runtime call site to send the BenchRouter route ID as that call site's model value.\n");
   process.stdout.write("- Update existing product tests/mocks for that call site so they cover the BenchRouter-wired runtime path.\n");
   process.stdout.write("- Keep persistent config minimal and never create a repo-global BENCHROUTER_MODEL.\n");
@@ -393,9 +393,18 @@ async function doctor() {
     }
   }
 
-  // Discover per-route scorer + cases files declared in the v2 kit-state manifest.
+  // Discover per-route scorer + cases files from kit metadata first, then the
+  // committed BenchRouter manifest. The manifest fallback keeps doctor useful
+  // when local files were hand-copied or an older kit-state is missing.
   const kitStatePath = path.join(root, ".benchrouter/.kit-state.json");
-  const routeFiles = discoverRouteFilesFromKitState(kitStatePath, root, failures);
+  const configPath = path.join(root, ".benchrouter/benchrouter.yml");
+  let routeFiles = discoverRouteFilesFromKitState(kitStatePath, root, failures);
+  if (routeFiles.length === 0) {
+    routeFiles = discoverRouteFilesFromManifest(configPath, root, failures);
+  }
+  if (routeFiles.length === 0) {
+    failures.push("could not discover route scorer/cases files from .benchrouter/.kit-state.json or .benchrouter/benchrouter.yml");
+  }
 
   // Validate each route: cases must have ≥1 real captured case, scorer must pass node --check.
   for (const { casesPath, casesRelPath } of routeFiles) {
@@ -557,10 +566,154 @@ function discoverRouteFilesFromKitState(kitStatePath, root, failures) {
       kitCasesEntry: casesEntries.find((f) => f.path === casesRelPath)
     });
   }
-  if (routeFiles.length === 0) {
-    failures.push(".benchrouter/.kit-state.json lists no scorer files — re-run init or upgrade to get a v2 kit");
-  }
   return routeFiles;
+}
+
+function discoverRouteFilesFromManifest(configPath, root, failures) {
+  if (!existsSync(configPath)) {
+    return [];
+  }
+  let routes;
+  try {
+    routes = parseConfigRoutes(readFileSync(configPath, "utf8"));
+  } catch (error) {
+    failures.push(`.benchrouter/benchrouter.yml could not be parsed for route files: ${error instanceof Error ? error.message : "parse failed"}`);
+    return [];
+  }
+  return routes
+    .map((route) => {
+      const slug = route.slug || route.routeId;
+      if (!slug) {
+        return null;
+      }
+      const token = routeFileToken(slug);
+      const scorerRelPath = route.scorerPath || `.benchrouter/scorer.${token}.js`;
+      const casesRelPath = route.casesPath || `.benchrouter/cases.${token}.json`;
+      return {
+        token,
+        scorerPath: path.join(root, scorerRelPath),
+        scorerRelPath,
+        casesPath: path.join(root, casesRelPath),
+        casesRelPath,
+        kitCasesEntry: null
+      };
+    })
+    .filter(Boolean);
+}
+
+function routeFileToken(routeSlug) {
+  return String(routeSlug).split("/").join("__");
+}
+
+function parseConfigRoutes(text) {
+  const lines = text.split(/\r?\n/);
+  const routes = [];
+  let inRoutes = false;
+  const routesIndent = 0;
+  let listIndent = -1;
+  let itemIndent = -1;
+  let current = null;
+  let inEvalPack = false;
+  let inCaseRefs = false;
+  for (const rawLine of lines) {
+    const withoutComment = stripYamlComment(rawLine);
+    if (withoutComment.trim().length === 0) {
+      continue;
+    }
+    const indent = withoutComment.length - withoutComment.trimStart().length;
+    const trimmed = withoutComment.trim();
+    if (!inRoutes) {
+      if (indent === routesIndent && trimmed === "routes:") {
+        inRoutes = true;
+      }
+      continue;
+    }
+    if (indent <= routesIndent && !trimmed.startsWith("-")) {
+      break;
+    }
+    const isSequenceItem = trimmed === "-" || trimmed.startsWith("- ");
+    if (isSequenceItem && listIndent === -1) {
+      listIndent = indent;
+      itemIndent = indent + 2;
+    }
+    if (isSequenceItem && indent === listIndent) {
+      inEvalPack = false;
+      inCaseRefs = false;
+      current = { routeId: "", slug: "", scorerPath: "", casesPath: "" };
+      routes.push(current);
+    }
+    if (!current) {
+      continue;
+    }
+    if (isSequenceItem && indent !== listIndent && inCaseRefs) {
+      const caseRef = trimmed.startsWith("- ") ? parseYamlScalar(trimmed.slice(2).trim()) : "";
+      if (caseRef && !current.casesPath) {
+        current.casesPath = caseRef;
+      }
+      continue;
+    }
+    const keyValue = trimmed.startsWith("- ") ? trimmed.slice(2).trim() : trimmed;
+    const separator = keyValue.indexOf(":");
+    if (separator === -1) {
+      continue;
+    }
+    const key = keyValue.slice(0, separator).trim();
+    const rawValue = keyValue.slice(separator + 1).trim();
+    const effectiveIndent = trimmed.startsWith("- ") ? indent + 2 : indent;
+    if (effectiveIndent === itemIndent) {
+      inEvalPack = key === "eval_pack" && rawValue.length === 0;
+      inCaseRefs = false;
+      if (key === "route_id") {
+        const value = parseYamlScalar(rawValue);
+        if (value) {
+          current.routeId = value;
+        }
+      }
+      if (key === "id") {
+        const value = parseYamlScalar(rawValue);
+        if (value) {
+          current.slug = value;
+        }
+      }
+    } else if (effectiveIndent > itemIndent && inEvalPack) {
+      if (key === "scorer") {
+        const value = parseYamlScalar(rawValue);
+        if (value) {
+          current.scorerPath = value;
+        }
+        inCaseRefs = false;
+      } else if (key === "case_refs") {
+        inCaseRefs = rawValue.length === 0;
+      } else {
+        inCaseRefs = false;
+      }
+    }
+  }
+  return routes;
+}
+
+function stripYamlComment(line) {
+  let inSingle = false;
+  let inDouble = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === "'" && !inDouble) {
+      inSingle = !inSingle;
+    } else if (char === "\"" && !inSingle) {
+      inDouble = !inDouble;
+    } else if (char === "#" && !inSingle && !inDouble) {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+function parseYamlScalar(value) {
+  if (value.length >= 2 && ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'")))) {
+    const inner = value.slice(1, -1);
+    return value.startsWith("\"") ? inner.replace(/\\(.)/g, "$1") : inner.replace(/''/g, "'");
+  }
+  return value;
 }
 
 function validateCasesForDoctor(casesPath, relPath, failures) {
