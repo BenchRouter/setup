@@ -732,12 +732,21 @@ function validateCasesForDoctor(casesPath, relPath, failures) {
     failures.push(`${relPath} must be a JSON array`);
     return;
   }
-  // A real captured case has a non-empty messages array, non-null reference_output, and no _README stub key.
+  // A real runnable case mirrors the eval harness's isRunnableCase: an id plus either a non-empty
+  // input request body (test-derived/authored declared cases) OR a non-empty messages array (captured/legacy).
+  // reference_output is optional — the captured source records it as an incumbent calibration sample;
+  // test-derived/authored leave it null and carry the expected decision in scorer_metadata / the scorer.
   const realCases = cases.filter(
-    (c) => c && !("_README" in c) && Array.isArray(c.messages) && c.messages.length > 0 && c.reference_output !== null && c.reference_output !== undefined
+    (c) =>
+      c &&
+      !("_README" in c) &&
+      typeof c.id === "string" &&
+      c.id.length > 0 &&
+      ((c.input && typeof c.input === "object" && Object.keys(c.input).length > 0) ||
+        (Array.isArray(c.messages) && c.messages.length > 0))
   );
   if (realCases.length === 0) {
-    failures.push(`${relPath} has no captured cases yet — run the capture step (sidecar) before opening the PR`);
+    failures.push(`${relPath} has no runnable cases yet — add declared cases (test-derived/authored) or run the capture step (captured) before opening the PR`);
   }
 }
 
