@@ -1,0 +1,18 @@
+{
+  "id": "chatcmpl-fixture-proxy",
+  "object": "chat.completion",
+  "model": "minimax/minimax-m2.7",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "ok" },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 5,
+    "total_tokens": 15,
+    "cost": 0.04
+  }
+}
