@@ -1220,7 +1220,7 @@ Options:
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --dry-run                Print planned writes without changing files.
-  --force                  Overwrite BenchRouter-owned workflow/upload/kit files only.
+  --force                  Overwrite BenchRouter-owned workflow/replay/upload/kit files only.
   --overwrite-user-edits   Overwrite existing differing files.
   --output-dir <path>      Defaults to current directory.
 `);
