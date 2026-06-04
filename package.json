@@ -1,8 +1,12 @@
 {
   "name": "@benchrouter/setup",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "BenchRouter target-repo setup CLI",
   "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "npm test && node --check bin/benchrouter-setup.mjs && npm pack --dry-run"
+  },
   "bin": {
     "benchrouter-setup": "bin/benchrouter-setup.mjs"
   },

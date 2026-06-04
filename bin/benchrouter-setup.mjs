@@ -378,6 +378,7 @@ async function doctor() {
   const apiUrl = stringArg("api-url", "https://api.benchrouter.com").replace(/\/+$/, "");
   const repoFullName = stringArg("repo") ?? detectGitHubRepo();
   const failures = [];
+  const checks = [];
   const requiredFiles = [
     ".benchrouter/benchrouter.yml",
     ".benchrouter/.kit-state.json",
@@ -398,9 +399,10 @@ async function doctor() {
   // when local files were hand-copied or an older kit-state is missing.
   const kitStatePath = path.join(root, ".benchrouter/.kit-state.json");
   const configPath = path.join(root, ".benchrouter/benchrouter.yml");
+  const manifestRoutes = loadManifestRoutesForDoctor(configPath, failures);
   let routeFiles = discoverRouteFilesFromKitState(kitStatePath, root, failures);
   if (routeFiles.length === 0) {
-    routeFiles = discoverRouteFilesFromManifest(configPath, root, failures);
+    routeFiles = discoverRouteFilesFromManifest(configPath, root, failures, manifestRoutes);
   }
   if (routeFiles.length === 0) {
     failures.push("could not discover route scorer/cases files from .benchrouter/.kit-state.json or .benchrouter/benchrouter.yml");
@@ -490,12 +492,33 @@ async function doctor() {
     }
   }
 
+  const wiringResult = validateRuntimeWiringForDoctor(root, manifestRoutes, failures);
+  if (wiringResult.ok) {
+    checks.push(`runtime wiring ✓ ${wiringResult.routesChecked} route${wiringResult.routesChecked === 1 ? "" : "s"} reference call_site.base_url_env from code_refs`);
+  }
+
+  const routeForProxyPing = manifestRoutes.find((route) => route.routeId)?.routeId;
+  const proxyResult = await verifyProxyPingForDoctor({
+    apiUrl,
+    apiKey: process.env.BENCHROUTER_API_KEY,
+    routeId: routeForProxyPing,
+    failures
+  });
+  if (proxyResult.ok) {
+    checks.push(`auth ✓ proxy accepted BENCHROUTER_API_KEY for ${proxyResult.routeId}`);
+    checks.push(`route resolution ✓ ${proxyResult.routeId} resolved to ${proxyResult.model} with usage`);
+  }
+
   if (!args["skip-github-secret"]) {
     if (!repoFullName) {
       failures.push("could not detect GitHub repo for secret check; pass --repo owner/repo or --skip-github-secret");
     } else {
-      verifyGitHubActionsSecret(repoFullName, failures);
+      if (verifyGitHubActionsSecret(repoFullName, failures)) {
+        checks.push("GitHub secret ✓ BENCHROUTER_API_KEY exists");
+      }
     }
+  } else {
+    checks.push("GitHub secret skipped");
   }
 
   if (args["check-default-branch"]) {
@@ -507,12 +530,18 @@ async function doctor() {
   }
 
   if (failures.length > 0) {
+    for (const check of checks) {
+      process.stderr.write(`doctor check: ${check}\n`);
+    }
     for (const failure of failures) {
       process.stderr.write(`doctor failed: ${failure}\n`);
     }
     process.exit(1);
   }
 
+  for (const check of checks) {
+    process.stdout.write(`${check}\n`);
+  }
   process.stdout.write("BenchRouter setup doctor passed.\n");
 }
 
@@ -569,17 +598,20 @@ function discoverRouteFilesFromKitState(kitStatePath, root, failures) {
   return routeFiles;
 }
 
-function discoverRouteFilesFromManifest(configPath, root, failures) {
+function loadManifestRoutesForDoctor(configPath, failures) {
   if (!existsSync(configPath)) {
     return [];
   }
-  let routes;
   try {
-    routes = parseConfigRoutes(readFileSync(configPath, "utf8"));
+    return parseConfigRoutes(readFileSync(configPath, "utf8"));
   } catch (error) {
-    failures.push(`.benchrouter/benchrouter.yml could not be parsed for route files: ${error instanceof Error ? error.message : "parse failed"}`);
+    failures.push(`.benchrouter/benchrouter.yml could not be parsed: ${error instanceof Error ? error.message : "parse failed"}`);
     return [];
   }
+}
+
+function discoverRouteFilesFromManifest(configPath, root, failures, parsedRoutes) {
+  const routes = parsedRoutes ?? loadManifestRoutesForDoctor(configPath, failures);
   return routes
     .map((route) => {
       const slug = route.slug || route.routeId;
@@ -615,6 +647,8 @@ function parseConfigRoutes(text) {
   let current = null;
   let inEvalPack = false;
   let inCaseRefs = false;
+  let inCodeRefs = false;
+  let inCallSite = false;
   for (const rawLine of lines) {
     const withoutComment = stripYamlComment(rawLine);
     if (withoutComment.trim().length === 0) {
@@ -639,10 +673,19 @@ function parseConfigRoutes(text) {
     if (isSequenceItem && indent === listIndent) {
       inEvalPack = false;
       inCaseRefs = false;
-      current = { routeId: "", slug: "", scorerPath: "", casesPath: "" };
+      inCodeRefs = false;
+      inCallSite = false;
+      current = { routeId: "", slug: "", scorerPath: "", casesPath: "", codeRefs: [], callSiteBaseUrlEnv: "" };
       routes.push(current);
     }
     if (!current) {
+      continue;
+    }
+    if (isSequenceItem && indent !== listIndent && inCodeRefs) {
+      const codeRef = trimmed.startsWith("- ") ? parseYamlScalar(trimmed.slice(2).trim()) : "";
+      if (codeRef) {
+        current.codeRefs.push(codeRef);
+      }
       continue;
     }
     if (isSequenceItem && indent !== listIndent && inCaseRefs) {
@@ -662,6 +705,8 @@ function parseConfigRoutes(text) {
     const effectiveIndent = trimmed.startsWith("- ") ? indent + 2 : indent;
     if (effectiveIndent === itemIndent) {
       inEvalPack = key === "eval_pack" && rawValue.length === 0;
+      inCodeRefs = key === "code_refs" && rawValue.length === 0;
+      inCallSite = key === "call_site" && rawValue.length === 0;
       inCaseRefs = false;
       if (key === "route_id") {
         const value = parseYamlScalar(rawValue);
@@ -676,6 +721,8 @@ function parseConfigRoutes(text) {
         }
       }
     } else if (effectiveIndent > itemIndent && inEvalPack) {
+      inCodeRefs = false;
+      inCallSite = false;
       if (key === "scorer") {
         const value = parseYamlScalar(rawValue);
         if (value) {
@@ -686,6 +733,16 @@ function parseConfigRoutes(text) {
         inCaseRefs = rawValue.length === 0;
       } else {
         inCaseRefs = false;
+      }
+    } else if (effectiveIndent > itemIndent && inCallSite) {
+      inEvalPack = false;
+      inCodeRefs = false;
+      inCaseRefs = false;
+      if (key === "base_url_env") {
+        const value = parseYamlScalar(rawValue);
+        if (value) {
+          current.callSiteBaseUrlEnv = value;
+        }
       }
     }
   }
@@ -783,18 +840,163 @@ function parseJson(text) {
   }
 }
 
+function validateRuntimeWiringForDoctor(root, routes, failures) {
+  const routeEntries = routes.filter((route) => route.routeId || route.slug);
+  if (routeEntries.length === 0) {
+    failures.push("runtime wiring: .benchrouter/benchrouter.yml has no routes to verify");
+    return { ok: false, routesChecked: 0 };
+  }
+
+  let routesChecked = 0;
+  for (const route of routeEntries) {
+    const label = route.routeId || route.slug;
+    const baseUrlEnv = route.callSiteBaseUrlEnv;
+    if (!baseUrlEnv) {
+      failures.push(`runtime wiring route ${label}: missing call_site.base_url_env`);
+      continue;
+    }
+    if (route.codeRefs.length === 0) {
+      failures.push(`runtime wiring route ${label}: missing code_refs for call_site.base_url_env ${baseUrlEnv}`);
+      continue;
+    }
+
+    let referenced = false;
+    for (const codeRef of route.codeRefs) {
+      const resolved = resolveDoctorRelativePath(root, codeRef);
+      if (!resolved.ok) {
+        failures.push(`runtime wiring route ${label}: invalid code_ref ${codeRef}: ${resolved.error}`);
+        continue;
+      }
+      if (!existsSync(resolved.path)) {
+        failures.push(`runtime wiring route ${label}: missing code_ref ${codeRef}`);
+        continue;
+      }
+      let contents;
+      try {
+        contents = readFileSync(resolved.path, "utf8");
+      } catch (error) {
+        failures.push(`runtime wiring route ${label}: could not read code_ref ${codeRef}: ${error instanceof Error ? error.message : "read failed"}`);
+        continue;
+      }
+      if (contents.includes(baseUrlEnv)) {
+        referenced = true;
+      }
+    }
+    if (!referenced) {
+      failures.push(`runtime wiring route ${label}: call_site.base_url_env ${baseUrlEnv} is not referenced by any route code_refs`);
+      continue;
+    }
+    routesChecked += 1;
+  }
+
+  return { ok: routesChecked === routeEntries.length, routesChecked };
+}
+
+function resolveDoctorRelativePath(root, relativePath) {
+  if (path.isAbsolute(relativePath) || relativePath.includes("\0")) {
+    return { ok: false, error: "path must be a relative file path inside the repo" };
+  }
+  const target = path.resolve(root, relativePath);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    return { ok: false, error: "path escapes the repo root" };
+  }
+  return { ok: true, path: target };
+}
+
+async function verifyProxyPingForDoctor({ apiUrl, apiKey, routeId, failures }) {
+  if (!routeId) {
+    failures.push("proxy ping route not found: .benchrouter/benchrouter.yml has no route_id to test");
+    return { ok: false };
+  }
+  if (!apiKey) {
+    failures.push("proxy ping auth rejected: missing BENCHROUTER_API_KEY environment variable");
+    return { ok: false };
+  }
+
+  let response;
+  let responseText;
+  try {
+    response = await fetch(`${apiUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      signal: AbortSignal.timeout(30000),
+      body: JSON.stringify({
+        model: routeId,
+        messages: [{ role: "user", content: "ping" }],
+        temperature: 0,
+        max_tokens: 1
+      })
+    });
+    responseText = await response.text();
+  } catch (error) {
+    failures.push(`proxy ping network: ${proxyNetworkMessage(error)}`);
+    return { ok: false };
+  }
+
+  const parsed = parseJson(responseText);
+  if (!response.ok) {
+    const errorCode = proxyErrorCode(parsed);
+    if (response.status === 401 || response.status === 403 || ["invalid_token", "invalid_api_key", "unauthorized"].includes(errorCode)) {
+      failures.push(`proxy ping auth rejected: HTTP ${response.status}${errorCode ? ` ${errorCode}` : ""}`);
+      return { ok: false };
+    }
+    if (response.status === 404 || ["route_not_found", "model_not_found"].includes(errorCode)) {
+      failures.push(`proxy ping route not found: ${routeId}${errorCode ? ` (${errorCode})` : ""}`);
+      return { ok: false };
+    }
+    failures.push(`proxy ping failed: HTTP ${response.status}${errorCode ? ` ${errorCode}` : ""}`);
+    return { ok: false };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    failures.push("proxy ping malformed response: expected a JSON object");
+    return { ok: false };
+  }
+  const resolvedModel = typeof parsed.model === "string" ? parsed.model : "";
+  if (!resolvedModel || resolvedModel === routeId) {
+    failures.push("proxy ping malformed response: expected response.model to be a concrete model, not the route id");
+    return { ok: false };
+  }
+  if (!parsed.usage || typeof parsed.usage !== "object" || Array.isArray(parsed.usage)) {
+    failures.push("proxy ping malformed response: expected response.usage object");
+    return { ok: false };
+  }
+
+  return { ok: true, routeId, model: resolvedModel };
+}
+
+function proxyErrorCode(parsed) {
+  const code = parsed?.error?.code ?? parsed?.code;
+  return typeof code === "string" ? code : "";
+}
+
+function proxyNetworkMessage(error) {
+  if (error instanceof Error) {
+    if (error.name === "AbortError" || error.name === "TimeoutError") {
+      return "request timed out";
+    }
+    return error.message;
+  }
+  return "request failed";
+}
+
 function verifyGitHubActionsSecret(repoFullName, failures) {
   const result = spawnSync("gh", ["secret", "list", "--repo", repoFullName], { encoding: "utf8" });
   if (result.status !== 0) {
     failures.push(`could not verify GitHub Actions secrets with gh: ${(result.stderr || result.stdout || "gh failed").trim()}`);
-    return;
+    return false;
   }
   const hasSecret = result.stdout
     .split(/\r?\n/)
     .some((line) => line.trim().split(/\s+/)[0] === "BENCHROUTER_API_KEY");
   if (!hasSecret) {
     failures.push(`GitHub Actions secret BENCHROUTER_API_KEY is missing for ${repoFullName}`);
+    return false;
   }
+  return true;
 }
 
 function verifyDefaultBranchConfig(repoFullName, failures) {
@@ -847,7 +1049,8 @@ function isBenchRouterKitFile(relativePath) {
     ".benchrouter/.gitignore",
     ".benchrouter/.kit-state.json",
     ".benchrouter/upload-results.mjs",
-    ".github/workflows/benchrouter-evals.yml"
+    ".github/workflows/benchrouter-evals.yml",
+    "scripts/benchrouter-eval.ts"
   ].includes(relativePath);
 }
 

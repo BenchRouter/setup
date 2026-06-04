@@ -62,18 +62,18 @@ On a pull request BenchRouter creates a PR-tagged preview route id (`<route>-pr-
 
 `models` prints curated BenchRouter candidate model IDs, one per line. BenchRouter route manifests accept any OpenRouter model ID as the incumbent. If `init` rejects the repo's current incumbent model because OpenRouter does not recognize it, do not silently substitute another model; rerun `init` only after the user explicitly approves one exact replacement.
 
-`doctor` validates expected BenchRouter files, real eval case coverage, package script and dependencies, env example entries, generated helper syntax, and PR workflow wiring. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
+`doctor` validates expected BenchRouter files, real eval case coverage, package script and dependencies, env example entries, generated helper syntax, PR workflow wiring, route call-site wiring, and one authenticated BenchRouter proxy ping. The ping reads `BENCHROUTER_API_KEY` from the environment, sends the route ID as the OpenAI-compatible `model`, and requires BenchRouter to return a concrete model plus usage. It never prints the key. When it can identify the GitHub repo, it also verifies the `BENCHROUTER_API_KEY` Actions secret exists.
 
 Before opening a PR, use:
 
 ```bash
-npx @benchrouter/setup doctor --repo owner/repo
+BENCHROUTER_API_KEY=br_live_... npx @benchrouter/setup doctor --repo owner/repo
 ```
 
 After the PR is merged, verify the config file is readable on the default branch:
 
 ```bash
-npx @benchrouter/setup doctor --repo owner/repo --check-default-branch
+BENCHROUTER_API_KEY=br_live_... npx @benchrouter/setup doctor --repo owner/repo --check-default-branch
 ```
 
 The CLI never writes a raw BenchRouter API key to disk.

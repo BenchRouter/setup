@@ -32,8 +32,7 @@ jobs:
         with:
           node-version: 24
       - run: npm --version
-      - run: node --check bin/benchrouter-setup.mjs
-      - run: npm pack --dry-run
+      - run: npm run check
       - name: Publish to npm
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
         run: npm publish --access public --provenance
