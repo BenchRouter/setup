@@ -132,6 +132,63 @@ test("init prints distinct key destinations and writes runtime-only env example"
   assert.equal(setupServer.requests[0].authorization, "Bearer br_setup_fixture");
 });
 
+test("upgrade overwrites existing BenchRouter kit files without requiring --force", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "benchrouter-setup-upgrade-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".benchrouter"), { recursive: true });
+  await writeFile(path.join(root, ".benchrouter/.kit-state.json"), "{\"version\":\"0.0.9\"}\n");
+
+  const upgradeResponse = {
+    ok: true,
+    repo_full_name: "example/app",
+    route_id: routeId,
+    setup_kit_version: "0.0.10",
+    files: [
+      {
+        path: ".benchrouter/.kit-state.json",
+        content: "{\"version\":\"0.0.10\"}\n"
+      },
+      {
+        path: ".benchrouter/upload-results.mjs",
+        content: "export {};\n"
+      }
+    ]
+  };
+  const setupServer = await startFixtureProxy(t, {
+    status: 200,
+    body: upgradeResponse
+  });
+
+  const result = await runCli(
+    [
+      "upgrade",
+      "--upgrade-token",
+      "br_upgrade_fixture",
+      "--repo",
+      "example/app",
+      "--route-id",
+      routeId,
+      "--api-url",
+      setupServer.url,
+      "--output-dir",
+      root,
+      "--yes"
+    ],
+    root
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /would write \.benchrouter\/\.kit-state\.json/);
+  assert.match(result.stdout, /updated \.benchrouter\/\.kit-state\.json/);
+  assert.match(result.stdout, /created \.benchrouter\/upload-results\.mjs/);
+  assert.equal(await readFile(path.join(root, ".benchrouter/.kit-state.json"), "utf8"), "{\"version\":\"0.0.10\"}\n");
+  assert.equal(setupServer.requests.length, 2);
+  assert.equal(setupServer.requests[0].url, "/v1/setup/upgrade-packet/preview");
+  assert.equal(setupServer.requests[1].url, "/v1/control/setup-packet/upgrade");
+  assert.equal(setupServer.requests[0].authorization, "Bearer br_upgrade_fixture");
+  assert.equal(setupServer.requests[1].authorization, "Bearer br_upgrade_fixture");
+});
+
 test("doctor fails when call_site.base_url_env is not referenced by route code_refs", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.PROVIDER_BASE_URL;" });
   const proxy = await startFixtureProxy(t, {

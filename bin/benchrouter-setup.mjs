@@ -144,7 +144,6 @@ async function upgrade() {
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
   const autoYes = Boolean(args.yes);
-  const force = Boolean(args.force);
 
   if (!bearer) {
     fail("Missing BenchRouter credential. Pass --upgrade-token (from the dashboard banner) or --api-key/BENCHROUTER_API_KEY.");
@@ -212,9 +211,6 @@ async function upgrade() {
     if (previous === file.content) {
       process.stdout.write(`unchanged ${file.path}\n`);
       continue;
-    }
-    if (previous !== null && !force) {
-      fail(`${file.path} already exists and differs. Re-run with --force to overwrite it.`);
     }
     await mkdir(path.dirname(targetPath), { recursive: true });
     await writeFile(targetPath, file.content);
@@ -1144,6 +1140,7 @@ function isBenchRouterKitFile(relativePath) {
   return [
     ".benchrouter/.gitignore",
     ".benchrouter/.kit-state.json",
+    ".benchrouter/benchrouter-calibrate.mjs",
     ".benchrouter/benchrouter-eval.mjs",
     ".benchrouter/SETUP_AGENT.md",
     ".benchrouter/upload-results.mjs",
@@ -1388,7 +1385,7 @@ Options:
   --output-dir <path>      Defaults to current directory.
   --yes, -y                Skip the interactive confirmation after preview.
   --dry-run                Preview only. Requires --upgrade-token. Never calls apply.
-  --force                  Overwrite differing BenchRouter-owned kit files.
+  --force                  Accepted for compatibility. Upgrade overwrites BenchRouter-owned kit files by default.
 `);
   } else {
     stream.write(`Usage:
