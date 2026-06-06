@@ -69,8 +69,12 @@ test("init prints distinct key destinations and writes runtime-only env example"
       setup_packet: {
         files: [
           {
-            path: ".benchrouter/SETUP_AGENT.md",
-            content: "# BenchRouter setup agent\n"
+            path: ".benchrouter/SETUP_README.md",
+            content: "# BenchRouter setup\n"
+          },
+          {
+            path: ".benchrouter/README.md",
+            content: "# BenchRouter\n"
           },
           {
             path: ".benchrouter/benchrouter.yml",
@@ -119,9 +123,9 @@ test("init prints distinct key destinations and writes runtime-only env example"
   assert.match(result.stdout, /GitHub Actions secret BENCHROUTER_EVAL_API_KEY: br_live_eval_fixture/);
   assert.match(result.stdout, /Store these now; old values cannot be recovered/);
   assert.doesNotMatch(result.stdout, /GitHub Actions BENCHROUTER_API_KEY/);
-  assert.match(result.stdout, /Tell your coding agent: read \.benchrouter\/SETUP_AGENT\.md/);
-  assert.match(result.stdout, /test-derived .* captured/);
-  assert.match(result.stdout, /runtime host BENCHROUTER_API_KEY .* GitHub Actions repo secret BENCHROUTER_EVAL_API_KEY/);
+  assert.match(result.stdout, /Tell your coding agent: read \.benchrouter\/SETUP_README\.md/);
+  assert.match(result.stdout, /call-site patch, eval evidence, scorer, calibration, and env-var install/);
+  assert.match(result.stdout, /runtime BENCHROUTER_API_KEY in the app host, GitHub Actions repo secret BENCHROUTER_EVAL_API_KEY/);
 
   const envExample = await readFile(path.join(root, ".env.example"), "utf8");
   assert.match(envExample, /^BENCHROUTER_API_KEY= # runtime key/m);
@@ -266,6 +270,8 @@ async function createTargetRepo(t, { codeRefText }) {
   await mkdir(path.join(root, "src"), { recursive: true });
 
   await writeFile(path.join(root, ".benchrouter/benchrouter.yml"), manifestYaml());
+  await writeFile(path.join(root, ".benchrouter/README.md"), "# BenchRouter\n");
+  await writeFile(path.join(root, ".benchrouter/SETUP_README.md"), "# BenchRouter Setup\n");
   await writeFile(
     path.join(root, ".benchrouter/.kit-state.json"),
     `${JSON.stringify({

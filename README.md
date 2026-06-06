@@ -37,7 +37,7 @@ npx @benchrouter/setup models
 npx @benchrouter/setup doctor
 ```
 
-`init` fetches the BenchRouter setup packet, writes BenchRouter scaffold files, updates `package.json`, and adds runtime-only `.env.example` entries such as `BENCHROUTER_API_KEY` and the call site's `base_url_env`. Existing files are preserved by default on re-init. If the packet includes `.benchrouter/SETUP_AGENT.md`, the CLI tells the coding agent to read that short, repo-specific setup brief instead of relying on a long generic prompt.
+`init` fetches the BenchRouter setup packet, writes BenchRouter scaffold files, updates `package.json`, and adds runtime-only `.env.example` entries such as `BENCHROUTER_API_KEY` and the call site's `base_url_env`. Existing files are preserved by default on re-init. The CLI tells the coding agent to read `.benchrouter/SETUP_README.md`, the repo-specific setup brief generated with the packet.
 
 The generated workflow runs on the setup PR: it asks BenchRouter for an eval plan, skips model runs when the same route/eval/covered-code fingerprint already has evidence, uploads only the model arms that need fresh evidence, and fails the PR check if the route cannot call BenchRouter. The workflow reads the GitHub Actions secret named `BENCHROUTER_EVAL_API_KEY` and maps it to `BENCHROUTER_API_KEY` only inside the eval job.
 
