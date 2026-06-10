@@ -24,12 +24,13 @@ const DOCTOR_WORKFLOW_SNIPPETS = [
 const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
   "prepare",
   "validate-dispatch",
+  "report-snapshot",
   "plan-pr",
   "import-main",
   "run-model",
   "upload-results",
   "/v1/control/eval-plan",
-  "/v1/control/import-github-config",
+  "/v1/route-snapshots",
   "/v1/eval-model-runs/",
   "pull_request_number",
   "head_sha"

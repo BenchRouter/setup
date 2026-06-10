@@ -1,6 +1,6 @@
 {
   "name": "@benchrouter/setup",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "description": "BenchRouter target-repo setup CLI",
   "type": "module",
   "scripts": {
