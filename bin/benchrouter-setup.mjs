@@ -65,6 +65,7 @@ async function init() {
   const routeNames = arrayArg("name");
   const incumbentModels = arrayArg("incumbent-model");
   const codeRefs = arrayArg("code-ref");
+  const baseUrlEnvs = arrayArg("base-url-env");
   const outputDir = path.resolve(stringArg("output-dir", process.cwd()));
   const dryRun = Boolean(args["dry-run"]);
   const overwriteUserEdits = Boolean(args["overwrite-user-edits"]);
@@ -79,12 +80,16 @@ async function init() {
   if (routeIds.length !== routeNames.length || routeIds.length !== incumbentModels.length) {
     usage(1, "init", "When repeating routes, pass one --name and one --incumbent-model per --route-id (in the same order).");
   }
+  if (baseUrlEnvs.length > 1 && baseUrlEnvs.length !== routeIds.length) {
+    usage(1, "init", "When repeating --base-url-env, pass one value per --route-id (in the same order), or pass it once for all routes.");
+  }
 
   const routeSpecs = routeIds.map((id, index) => ({
     route_id: id,
     name: routeNames[index],
     incumbent_model: incumbentModels[index],
-    code_refs: codeRefs
+    code_refs: codeRefs,
+    base_url_env: baseUrlEnvs[index] ?? baseUrlEnvs[0] ?? ""
   }));
   const routeId = routeSpecs[0].route_id;
   const routeName = routeSpecs[0].name;
@@ -334,13 +339,16 @@ async function fetchSetupPacket({ apiUrl, setupCode, repoFullName, routeSpecs, d
       route_id: primary.route_id,
       name: primary.name,
       incumbent_model: primary.incumbent_model,
-      code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined
+      code_refs: primary.code_refs.length > 0 ? primary.code_refs : undefined,
+      base_url_env: primary.base_url_env || undefined
     },
     routes: additional.length > 0
       ? additional.map((spec) => ({
           route_id: spec.route_id,
           name: spec.name,
-          incumbent_model: spec.incumbent_model
+          incumbent_model: spec.incumbent_model,
+          code_refs: spec.code_refs.length > 0 ? spec.code_refs : undefined,
+          base_url_env: spec.base_url_env || undefined
         }))
       : undefined
   };
@@ -418,18 +426,13 @@ async function doctor() {
     }
   }
 
-  // Discover per-route scorer + cases files from kit metadata first, then the
-  // committed BenchRouter manifest. The manifest fallback keeps doctor useful
-  // when local files were hand-copied or an older kit-state is missing.
+  // Discover per-route scorer + cases files from BenchRouter-owned kit metadata.
+  // Doctor must not interpret the user-authored manifest; the server owns YAML parsing.
   const kitStatePath = path.join(root, ".benchrouter/.kit-state.json");
-  const configPath = path.join(root, ".benchrouter/benchrouter.yml");
-  const manifestRoutes = loadManifestRoutesForDoctor(configPath, failures);
-  let routeFiles = discoverRouteFilesFromKitState(kitStatePath, root, failures);
+  const kitRoutes = loadKitStateRoutesForDoctor(kitStatePath, failures);
+  const routeFiles = discoverRouteFilesFromKitRoutes(kitRoutes, root);
   if (routeFiles.length === 0) {
-    routeFiles = discoverRouteFilesFromManifest(configPath, root, failures, manifestRoutes);
-  }
-  if (routeFiles.length === 0) {
-    failures.push("could not discover route scorer/cases files from .benchrouter/.kit-state.json or .benchrouter/benchrouter.yml");
+    failures.push("could not discover route scorer/cases files from .benchrouter/.kit-state.json");
   }
 
   // Validate each route: cases must have ≥1 real captured case, scorer must pass node --check.
@@ -485,7 +488,7 @@ async function doctor() {
     const envKeys = parseEnvExampleKeys(envExample);
     const expectedRuntimeKeys = new Set([
       "BENCHROUTER_API_KEY",
-      ...manifestRoutes.map((route) => route.callSiteBaseUrlEnv).filter(Boolean)
+      ...kitRoutes.map((route) => route.callSiteBaseUrlEnv).filter(Boolean)
     ]);
     for (const key of expectedRuntimeKeys) {
       if (!envKeys.includes(key)) {
@@ -506,16 +509,16 @@ async function doctor() {
     }
   }
 
-  for (const checklistItem of runtimeHostChecklist({ root, routes: manifestRoutes, apiUrl })) {
+  for (const checklistItem of runtimeHostChecklist({ root, routes: kitRoutes, apiUrl })) {
     checks.push(checklistItem);
   }
 
-  const wiringResult = validateRuntimeWiringForDoctor(root, manifestRoutes, failures);
+  const wiringResult = validateRuntimeWiringForDoctor(root, kitRoutes, failures);
   if (wiringResult.ok) {
     checks.push(`runtime wiring ✓ ${wiringResult.routesChecked} route${wiringResult.routesChecked === 1 ? "" : "s"} reference call_site.base_url_env from code_refs`);
   }
 
-  const routeForProxyPing = manifestRoutes.find((route) => route.routeId)?.routeId;
+  const routeForProxyPing = kitRoutes.find((route) => route.routeId)?.routeId;
   const proxyResult = await verifyProxyPingForDoctor({
     apiUrl,
     apiKey: process.env.BENCHROUTER_API_KEY,
@@ -583,7 +586,7 @@ async function fetchModelIds(apiUrl) {
   return ids;
 }
 
-function discoverRouteFilesFromKitState(kitStatePath, root, failures) {
+function loadKitStateRoutesForDoctor(kitStatePath, failures) {
   if (!existsSync(kitStatePath)) {
     return [];
   }
@@ -594,205 +597,45 @@ function discoverRouteFilesFromKitState(kitStatePath, root, failures) {
     failures.push(`.benchrouter/.kit-state.json is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`);
     return [];
   }
-  const files = Array.isArray(kitState?.files) ? kitState.files : [];
-  const scorerEntries = files.filter(
-    (f) => typeof f?.path === "string" && /^\.benchrouter\/scorer\.[^/]+\.js$/.test(f.path)
-  );
-  const casesEntries = files.filter(
-    (f) => typeof f?.path === "string" && /^\.benchrouter\/cases\.[^/]+\.json$/.test(f.path)
-  );
-
-  const routeFiles = [];
-  for (const scorer of scorerEntries) {
-    const tokenMatch = scorer.path.match(/^\.benchrouter\/scorer\.(.+)\.js$/);
-    if (!tokenMatch) continue;
-    const token = tokenMatch[1];
-    const casesRelPath = `.benchrouter/cases.${token}.json`;
-    routeFiles.push({
-      token,
-      scorerPath: path.join(root, scorer.path),
-      scorerRelPath: scorer.path,
-      casesPath: path.join(root, casesRelPath),
-      casesRelPath,
-      kitCasesEntry: casesEntries.find((f) => f.path === casesRelPath)
-    });
-  }
-  return routeFiles;
+  const rawRoutes = Array.isArray(kitState?.routes) ? kitState.routes : [];
+  return rawRoutes.map((route, index) => normalizeKitStateRouteForDoctor(route, index, failures)).filter(Boolean);
 }
 
-function loadManifestRoutesForDoctor(configPath, failures) {
-  if (!existsSync(configPath)) {
-    return [];
+function normalizeKitStateRouteForDoctor(route, index, failures) {
+  if (!route || typeof route !== "object" || Array.isArray(route)) {
+    failures.push(`.benchrouter/.kit-state.json routes[${index}] must be an object`);
+    return null;
   }
-  try {
-    return parseConfigRoutes(readFileSync(configPath, "utf8"));
-  } catch (error) {
-    failures.push(`.benchrouter/benchrouter.yml could not be parsed: ${error instanceof Error ? error.message : "parse failed"}`);
-    return [];
+  const routeId = typeof route.route_id === "string" ? route.route_id.trim() : "";
+  const slug = typeof route.route_slug === "string" && route.route_slug.trim().length > 0 ? route.route_slug.trim() : routeId;
+  if (!routeId) {
+    failures.push(`.benchrouter/.kit-state.json routes[${index}].route_id is required`);
+    return null;
   }
+  const token = routeFileToken(slug || routeId);
+  return {
+    routeId,
+    slug,
+    scorerPath: typeof route.scorer_path === "string" && route.scorer_path.trim().length > 0 ? route.scorer_path.trim() : `.benchrouter/scorer.${token}.js`,
+    casesPath: typeof route.cases_path === "string" && route.cases_path.trim().length > 0 ? route.cases_path.trim() : `.benchrouter/cases.${token}.json`,
+    codeRefs: Array.isArray(route.code_refs) ? route.code_refs.filter((ref) => typeof ref === "string" && ref.length > 0) : [],
+    callSiteBaseUrlEnv: typeof route.base_url_env === "string" ? route.base_url_env.trim() : ""
+  };
 }
 
-function discoverRouteFilesFromManifest(configPath, root, failures, parsedRoutes) {
-  const routes = parsedRoutes ?? loadManifestRoutesForDoctor(configPath, failures);
-  return routes
-    .map((route) => {
-      const slug = route.slug || route.routeId;
-      if (!slug) {
-        return null;
-      }
-      const token = routeFileToken(slug);
-      const scorerRelPath = route.scorerPath || `.benchrouter/scorer.${token}.js`;
-      const casesRelPath = route.casesPath || `.benchrouter/cases.${token}.json`;
-      return {
-        token,
-        scorerPath: path.join(root, scorerRelPath),
-        scorerRelPath,
-        casesPath: path.join(root, casesRelPath),
-        casesRelPath,
-        kitCasesEntry: null
-      };
-    })
-    .filter(Boolean);
+function discoverRouteFilesFromKitRoutes(routes, root) {
+  return routes.map((route) => ({
+    token: routeFileToken(route.slug || route.routeId),
+    scorerPath: path.join(root, route.scorerPath),
+    scorerRelPath: route.scorerPath,
+    casesPath: path.join(root, route.casesPath),
+    casesRelPath: route.casesPath,
+    kitCasesEntry: null
+  }));
 }
 
 function routeFileToken(routeSlug) {
   return String(routeSlug).split("/").join("__");
-}
-
-function parseConfigRoutes(text) {
-  const lines = text.split(/\r?\n/);
-  const routes = [];
-  let inRoutes = false;
-  const routesIndent = 0;
-  let listIndent = -1;
-  let itemIndent = -1;
-  let current = null;
-  let inEvalPack = false;
-  let inCaseRefs = false;
-  let inCodeRefs = false;
-  let inCallSite = false;
-  for (const rawLine of lines) {
-    const withoutComment = stripYamlComment(rawLine);
-    if (withoutComment.trim().length === 0) {
-      continue;
-    }
-    const indent = withoutComment.length - withoutComment.trimStart().length;
-    const trimmed = withoutComment.trim();
-    if (!inRoutes) {
-      if (indent === routesIndent && trimmed === "routes:") {
-        inRoutes = true;
-      }
-      continue;
-    }
-    if (indent <= routesIndent && !trimmed.startsWith("-")) {
-      break;
-    }
-    const isSequenceItem = trimmed === "-" || trimmed.startsWith("- ");
-    if (isSequenceItem && listIndent === -1) {
-      listIndent = indent;
-      itemIndent = indent + 2;
-    }
-    if (isSequenceItem && indent === listIndent) {
-      inEvalPack = false;
-      inCaseRefs = false;
-      inCodeRefs = false;
-      inCallSite = false;
-      current = { routeId: "", slug: "", scorerPath: "", casesPath: "", codeRefs: [], callSiteBaseUrlEnv: "" };
-      routes.push(current);
-    }
-    if (!current) {
-      continue;
-    }
-    if (isSequenceItem && indent !== listIndent && inCodeRefs) {
-      const codeRef = trimmed.startsWith("- ") ? parseYamlScalar(trimmed.slice(2).trim()) : "";
-      if (codeRef) {
-        current.codeRefs.push(codeRef);
-      }
-      continue;
-    }
-    if (isSequenceItem && indent !== listIndent && inCaseRefs) {
-      const caseRef = trimmed.startsWith("- ") ? parseYamlScalar(trimmed.slice(2).trim()) : "";
-      if (caseRef && !current.casesPath) {
-        current.casesPath = caseRef;
-      }
-      continue;
-    }
-    const keyValue = trimmed.startsWith("- ") ? trimmed.slice(2).trim() : trimmed;
-    const separator = keyValue.indexOf(":");
-    if (separator === -1) {
-      continue;
-    }
-    const key = keyValue.slice(0, separator).trim();
-    const rawValue = keyValue.slice(separator + 1).trim();
-    const effectiveIndent = trimmed.startsWith("- ") ? indent + 2 : indent;
-    if (effectiveIndent === itemIndent) {
-      inEvalPack = key === "eval_pack" && rawValue.length === 0;
-      inCodeRefs = key === "code_refs" && rawValue.length === 0;
-      inCallSite = key === "call_site" && rawValue.length === 0;
-      inCaseRefs = false;
-      if (key === "route_id") {
-        const value = parseYamlScalar(rawValue);
-        if (value) {
-          current.routeId = value;
-        }
-      }
-      if (key === "id") {
-        const value = parseYamlScalar(rawValue);
-        if (value) {
-          current.slug = value;
-        }
-      }
-    } else if (effectiveIndent > itemIndent && inEvalPack) {
-      inCodeRefs = false;
-      inCallSite = false;
-      if (key === "scorer") {
-        const value = parseYamlScalar(rawValue);
-        if (value) {
-          current.scorerPath = value;
-        }
-        inCaseRefs = false;
-      } else if (key === "case_refs") {
-        inCaseRefs = rawValue.length === 0;
-      } else {
-        inCaseRefs = false;
-      }
-    } else if (effectiveIndent > itemIndent && inCallSite) {
-      inEvalPack = false;
-      inCodeRefs = false;
-      inCaseRefs = false;
-      if (key === "base_url_env") {
-        const value = parseYamlScalar(rawValue);
-        if (value) {
-          current.callSiteBaseUrlEnv = value;
-        }
-      }
-    }
-  }
-  return routes;
-}
-
-function stripYamlComment(line) {
-  let inSingle = false;
-  let inDouble = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (char === "'" && !inDouble) {
-      inSingle = !inSingle;
-    } else if (char === "\"" && !inSingle) {
-      inDouble = !inDouble;
-    } else if (char === "#" && !inSingle && !inDouble) {
-      return line.slice(0, index);
-    }
-  }
-  return line;
-}
-
-function parseYamlScalar(value) {
-  if (value.length >= 2 && ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'")))) {
-    const inner = value.slice(1, -1);
-    return value.startsWith("\"") ? inner.replace(/\\(.)/g, "$1") : inner.replace(/''/g, "'");
-  }
-  return value;
 }
 
 function validateCasesForDoctor(casesPath, relPath, failures) {
@@ -865,7 +708,7 @@ function parseJson(text) {
 function validateRuntimeWiringForDoctor(root, routes, failures) {
   const routeEntries = routes.filter((route) => route.routeId || route.slug);
   if (routeEntries.length === 0) {
-    failures.push("runtime wiring: .benchrouter/benchrouter.yml has no routes to verify");
+    failures.push("runtime wiring: .benchrouter/.kit-state.json has no routes to verify");
     return { ok: false, routesChecked: 0 };
   }
 
@@ -1007,7 +850,7 @@ async function verifyProxyPingForDoctor({ apiUrl, apiKey, routeId, failures }) {
     return { ok: false, skipped: true, reason: "no BENCHROUTER_API_KEY in environment; live proxy ping not run" };
   }
   if (!routeId) {
-    failures.push("proxy ping route not found: .benchrouter/benchrouter.yml has no route_id to test");
+    failures.push("proxy ping route not found: .benchrouter/.kit-state.json has no route_id to test");
     return { ok: false };
   }
 
@@ -1385,8 +1228,8 @@ Multiple routes (paired in order; first triple is primary):
     --route-id product/route-a --name "Route A" --incumbent-model provider/model-a \\
     --route-id product/route-b --name "Route B" --incumbent-model provider/model-b
 
-Routes share one product. After init you can add more routes by editing
-.benchrouter/benchrouter.yml; the workflow matrixes over every listed route.
+Routes share one product. Pass repeated route triples during init; the generated
+.benchrouter/.kit-state.json is the kit's route index.
 
 Options:
   --repo owner/repo
@@ -1394,6 +1237,7 @@ Options:
   --name <text>           Repeatable. Display name for the matching --route-id.
   --incumbent-model <id>  Repeatable. Incumbent model for the matching --route-id.
   --code-ref <path>       Repeatable. Call-site files recorded on the primary route.
+  --base-url-env <name>   Repeatable. Env var the call site uses for its LLM base URL.
   --api-url <url>          Defaults to https://api.benchrouter.com.
   --dry-run                Print planned writes without changing files.
   --force                  Overwrite BenchRouter-generated kit/readme files only.

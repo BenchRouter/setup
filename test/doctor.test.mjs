@@ -151,6 +151,10 @@ test("init prints distinct key destinations and writes runtime-only env example"
       "Chat",
       "--incumbent-model",
       "openai/gpt-4o-mini",
+      "--base-url-env",
+      "OPENAI_BASE_URL",
+      "--code-ref",
+      "src/llm.js",
       "--api-url",
       setupServer.url,
       "--output-dir",
@@ -175,6 +179,8 @@ test("init prints distinct key destinations and writes runtime-only env example"
   assert.doesNotMatch(envExample, /BENCHROUTER_EVAL_RUN_ID/);
   assert.equal(setupServer.requests.length, 1);
   assert.equal(setupServer.requests[0].authorization, "Bearer br_setup_fixture");
+  assert.equal(setupServer.requests[0].body.route.base_url_env, "OPENAI_BASE_URL");
+  assert.deepEqual(setupServer.requests[0].body.route.code_refs, ["src/llm.js"]);
 });
 
 test("upgrade overwrites existing BenchRouter kit files without requiring --force", async (t) => {
@@ -316,6 +322,17 @@ async function createTargetRepo(t, { codeRefText }) {
   await writeFile(
     path.join(root, ".benchrouter/.kit-state.json"),
     `${JSON.stringify({
+      routes: [
+        {
+          route_id: routeId,
+          route_slug: "app/chat",
+          incumbent_model: "openai/gpt-4o-mini",
+          base_url_env: "OPENAI_BASE_URL",
+          code_refs: ["src/llm.js"],
+          scorer_path: ".benchrouter/scorer.app__chat.js",
+          cases_path: ".benchrouter/cases.app__chat.json"
+        }
+      ],
       files: [
         { path: ".benchrouter/scorer.app__chat.js" },
         { path: ".benchrouter/cases.app__chat.json" }
