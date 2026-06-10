@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,46 @@ test("doctor skips live proxy ping when the runtime key is absent", async (t) =>
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /auth skipped: no BENCHROUTER_API_KEY in environment; live proxy ping not run/);
   assert.equal(proxy.requests.length, 0);
+});
+
+test("doctor reports disabled BenchRouter Evals workflow from gh", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const ghBin = await createFixtureGh(t);
+  const proxy = await startFixtureProxy(t, {
+    status: 200,
+    headers: { "x-benchrouter-selected-model": fixture.model },
+    body: fixture
+  });
+
+  const result = await runCli(["doctor", "--output-dir", root, "--api-url", proxy.url, "--repo", "example/app"], root, {
+    BENCHROUTER_API_KEY: "br_test_fixture",
+    GH_WORKFLOW_STATE: "disabled_manually",
+    PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}`
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /BenchRouter Evals workflow is disabled_manually/);
+  assert.match(result.stderr, /gh workflow enable benchrouter-evals\.yml --repo example\/app/);
+});
+
+test("doctor confirms active BenchRouter Evals workflow from gh", async (t) => {
+  const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
+  const ghBin = await createFixtureGh(t);
+  const proxy = await startFixtureProxy(t, {
+    status: 200,
+    headers: { "x-benchrouter-selected-model": fixture.model },
+    body: fixture
+  });
+
+  const result = await runCli(["doctor", "--output-dir", root, "--api-url", proxy.url, "--repo", "example/app"], root, {
+    BENCHROUTER_API_KEY: "br_test_fixture",
+    GH_WORKFLOW_STATE: "active",
+    PATH: `${ghBin}${path.delimiter}${process.env.PATH ?? ""}`
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /GitHub secret .*BENCHROUTER_EVAL_API_KEY exists/);
+  assert.match(result.stdout, /GitHub workflow .*BenchRouter Evals is active/);
 });
 
 test("init prints distinct key destinations and writes runtime-only env example", async (t) => {
@@ -322,6 +362,38 @@ async function createTargetRepo(t, { codeRefText }) {
   await writeFile(path.join(root, "src/llm.js"), `${codeRefText}\n`);
 
   return root;
+}
+
+async function createFixtureGh(t) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "benchrouter-gh-fixture-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const ghPath = path.join(dir, "gh");
+  await writeFile(
+    ghPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "secret" && args[1] === "list") {
+  process.stdout.write("BENCHROUTER_EVAL_API_KEY\\t2026-06-10T00:00:00Z\\n");
+  process.exit(0);
+}
+if (args[0] === "api" && args[1] === "repos/example/app/actions/workflows") {
+  process.stdout.write(JSON.stringify({
+    total_count: 1,
+    workflows: [{
+      id: 271768590,
+      name: "BenchRouter Evals",
+      path: ".github/workflows/benchrouter-evals.yml",
+      state: process.env.GH_WORKFLOW_STATE || "active"
+    }]
+  }));
+  process.exit(0);
+}
+process.stderr.write("unexpected gh fixture args: " + args.join(" ") + "\\n");
+process.exit(1);
+`
+  );
+  await chmod(ghPath, 0o755);
+  return dir;
 }
 
 function doctorWorkflowSnippets() {

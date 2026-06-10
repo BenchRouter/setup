@@ -537,6 +537,7 @@ async function doctor() {
         checks.push("GitHub secret ✓ BENCHROUTER_EVAL_API_KEY exists");
         checks.push("rerun hint: if BenchRouter Evals already ran before this secret existed, rerun the failed workflow after installing it (example: gh run rerun --failed)");
       }
+      verifyGitHubWorkflowState(repoFullName, failures, checks);
     }
   } else {
     checks.push("GitHub secret check skipped (expected secret: BENCHROUTER_EVAL_API_KEY)");
@@ -1094,6 +1095,38 @@ function verifyGitHubActionsSecret(repoFullName, failures) {
     return false;
   }
   return true;
+}
+
+function verifyGitHubWorkflowState(repoFullName, failures, checks) {
+  const result = spawnSync("gh", ["api", `repos/${repoFullName}/actions/workflows`], { encoding: "utf8" });
+  if (result.error && result.error.code === "ENOENT") {
+    return;
+  }
+  if (result.status !== 0) {
+    failures.push(`could not verify BenchRouter Evals workflow state with gh: ${(result.stderr || result.stdout || "gh failed").trim()}`);
+    return;
+  }
+
+  let workflows;
+  try {
+    workflows = JSON.parse(result.stdout).workflows;
+  } catch {
+    failures.push("could not parse gh workflow listing response");
+    return;
+  }
+  const workflow = Array.isArray(workflows)
+    ? workflows.find((entry) => entry && entry.path === ".github/workflows/benchrouter-evals.yml")
+    : null;
+  if (!workflow) {
+    failures.push("BenchRouter Evals workflow is missing in GitHub Actions");
+    return;
+  }
+  const state = typeof workflow.state === "string" ? workflow.state : "unknown";
+  if (state !== "active") {
+    failures.push(`BenchRouter Evals workflow is ${state}; re-enable it with: gh workflow enable benchrouter-evals.yml --repo ${repoFullName}`);
+    return;
+  }
+  checks.push("GitHub workflow ✓ BenchRouter Evals is active");
 }
 
 function verifyDefaultBranchConfig(repoFullName, failures) {
