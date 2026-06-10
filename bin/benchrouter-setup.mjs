@@ -7,6 +7,33 @@ import * as readline from "node:readline/promises";
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
+const DOCTOR_WORKFLOW_SNIPPETS = [
+  ".benchrouter/upload-results.mjs",
+  "pull_request",
+  "workflow_dispatch",
+  "benchrouter_plan",
+  "BENCHROUTER_MODEL_RUN_ID",
+  "BENCHROUTER_ROUTE_ID",
+  "BENCHROUTER_API_KEY",
+  "secrets.BENCHROUTER_EVAL_API_KEY",
+  "BENCHROUTER_UPLOAD_RESULTS",
+  "run-model",
+  "upload-results",
+  "id-token: write"
+];
+const DOCTOR_UPLOAD_HELPER_SNIPPETS = [
+  "prepare",
+  "validate-dispatch",
+  "plan-pr",
+  "import-main",
+  "run-model",
+  "upload-results",
+  "/v1/control/eval-plan",
+  "/v1/control/import-github-config",
+  "/v1/eval-model-runs/",
+  "pull_request_number",
+  "head_sha"
+];
 
 if (command === "init") {
   await init();
@@ -421,17 +448,7 @@ async function doctor() {
   const workflowPath = path.join(root, ".github/workflows/benchrouter-evals.yml");
   if (existsSync(workflowPath)) {
     const workflow = readFileSync(workflowPath, "utf8");
-    for (const snippet of [
-      ".benchrouter/upload-results.mjs",
-      "pull_request",
-      "workflow_dispatch",
-      "BENCHROUTER_EVAL_RUN_ID",
-      "BENCHROUTER_ROUTE_ID",
-      "BENCHROUTER_API_KEY",
-      "secrets.BENCHROUTER_EVAL_API_KEY",
-      "BENCHROUTER_UPLOAD_RESULTS",
-      "id-token: write"
-    ]) {
+    for (const snippet of DOCTOR_WORKFLOW_SNIPPETS) {
       if (!workflow.includes(snippet)) {
         failures.push(`workflow missing ${snippet}`);
       }
@@ -441,15 +458,7 @@ async function doctor() {
   const uploadHelperPath = path.join(root, ".benchrouter/upload-results.mjs");
   if (existsSync(uploadHelperPath)) {
     const helper = readFileSync(uploadHelperPath, "utf8");
-    for (const snippet of [
-      "plan-pr",
-      "/v1/control/eval-plan",
-      "/v1/control/import-github-config",
-      "/arm-results",
-      "validate-dispatch",
-      "pull_request_number",
-      "head_sha"
-    ]) {
+    for (const snippet of DOCTOR_UPLOAD_HELPER_SNIPPETS) {
       if (!helper.includes(snippet)) {
         failures.push(`upload helper missing ${snippet}`);
       }

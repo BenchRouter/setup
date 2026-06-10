@@ -14,6 +14,7 @@ const routeId = "app/chat";
 const fixture = JSON.parse(
   await readFile(path.join(testDir, "fixtures/benchrouter-proxy/chat-completion.json"), "utf8")
 );
+const cliSource = await readFile(cliPath, "utf8");
 
 test("doctor passes with wired code_refs and a proxy fixture replay", async (t) => {
   const root = await createTargetRepo(t, { codeRefText: "const baseURL = process.env.OPENAI_BASE_URL;" });
@@ -283,15 +284,7 @@ async function createTargetRepo(t, { codeRefText }) {
   );
   await writeFile(
     path.join(root, ".benchrouter/upload-results.mjs"),
-    `const snippets = ${JSON.stringify([
-      "plan-pr",
-      "/v1/control/eval-plan",
-      "/v1/control/import-github-config",
-      "/arm-results",
-      "validate-dispatch",
-      "pull_request_number",
-      "head_sha"
-    ])};\nvoid snippets;\n`
+    `const snippets = ${JSON.stringify(doctorUploadHelperSnippets())};\nvoid snippets;\n`
   );
   await writeFile(path.join(root, ".benchrouter/sidecar.mjs"), "export {};\n");
   await writeFile(path.join(root, ".benchrouter/benchrouter-eval.mjs"), "export {};\n");
@@ -312,10 +305,11 @@ async function createTargetRepo(t, { codeRefText }) {
       "    steps:",
       "      - run: node .benchrouter/upload-results.mjs",
       "        env:",
-      "          BENCHROUTER_EVAL_RUN_ID: x",
+      "          BENCHROUTER_MODEL_RUN_ID: x",
       "          BENCHROUTER_ROUTE_ID: app/chat",
       "          BENCHROUTER_API_KEY: ${{ secrets.BENCHROUTER_EVAL_API_KEY }}",
-      "          BENCHROUTER_UPLOAD_RESULTS: '1'"
+      "          BENCHROUTER_UPLOAD_RESULTS: '1'",
+      ...doctorWorkflowSnippets().map((snippet) => `      # doctor-contract: ${snippet}`)
     ].join("\n")
   );
   await writeFile(
@@ -328,6 +322,20 @@ async function createTargetRepo(t, { codeRefText }) {
   await writeFile(path.join(root, "src/llm.js"), `${codeRefText}\n`);
 
   return root;
+}
+
+function doctorWorkflowSnippets() {
+  return readStringArrayConstant("DOCTOR_WORKFLOW_SNIPPETS");
+}
+
+function doctorUploadHelperSnippets() {
+  return readStringArrayConstant("DOCTOR_UPLOAD_HELPER_SNIPPETS");
+}
+
+function readStringArrayConstant(name) {
+  const match = cliSource.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`));
+  assert(match, `${name} not found in CLI source`);
+  return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
 }
 
 function manifestYaml() {
